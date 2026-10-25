@@ -132,6 +132,12 @@ export interface RiskLimits {
   readonly maxMarketsPerAccount: number;
   readonly maxConsecutiveLosses: number;
   readonly minFreeCollateralUsd: Decimal;
+  /** Collateral floor as a percent of equity; the larger of this and the USD floor wins. */
+  readonly minFreeCollateralPct: Decimal;
+  /** `risk` sizes off the stop; `leverage` sizes at MAX_LEVERAGE x equity. */
+  readonly sizingMode: 'risk' | 'leverage';
+  /** Leverage mode only: refuse if the stop-out would lose more than this % of equity. */
+  readonly maxRiskPerTradePct: Decimal;
   readonly maxOrderNotionalPct: Decimal;
   readonly minNotional: Decimal;
   readonly minOrderSize: Decimal | undefined;
@@ -170,6 +176,18 @@ export interface RiskDecision {
 
 export class RiskEngine {
   private readonly limits: RiskLimits;
+
+  /**
+   * Collateral floor for a given equity.
+   *
+   * The larger of the absolute USD floor and the percentage form. A pure dollar floor
+   * silently becomes a much bigger constraint as the account shrinks (50 USD is 13.5% of
+   * a 369 account but 0.2% of a 28,000 one), which is why the percentage form exists.
+   */
+  private collateralFloor(equity: Decimal): Decimal {
+    const pct = equity.times(this.limits.minFreeCollateralPct).div(100);
+    return Decimal.max(this.limits.minFreeCollateralUsd, pct);
+  }
   private readonly logger: Logger;
 
   constructor(limits: RiskLimits, logger: Logger) {
@@ -245,10 +263,13 @@ export class RiskEngine {
     if (!state.accountEquity.greaterThan(0)) {
       blockReasons.push(`account equity is not positive (${toFixedString(state.accountEquity)})`);
     }
-    if (state.freeCollateral.lessThan(this.limits.minFreeCollateralUsd)) {
-      blockReasons.push(
-        `free collateral ${toFixedString(state.freeCollateral)} below minimum ${toFixedString(this.limits.minFreeCollateralUsd)}`,
-      );
+    {
+      const floor = this.collateralFloor(state.accountEquity);
+      if (state.freeCollateral.lessThan(floor)) {
+        blockReasons.push(
+          `free collateral ${toFixedString(state.freeCollateral)} below minimum ${toFixedString(floor)}`,
+        );
+      }
     }
 
     /* ---- 6. Circuit breakers --------------------------------------- */
@@ -338,6 +359,24 @@ export class RiskEngine {
           `${toFixedString(this.limits.maxOrderNotionalPct)}% of equity`,
       );
       return { approved: false, blockReasons, warnings };
+    }
+
+    /**
+     * Leverage mode can imply a large loss at the stop, because the size is set by
+     * leverage rather than by the risk budget. Refuse anything beyond the configured
+     * percentage of equity: this is the guardrail that stops a leverage setting from
+     * quietly becoming an account-ending position.
+     */
+    if (this.limits.sizingMode === 'leverage') {
+      const riskPct = dec(sizing.breakdown.riskAtStopBps).div(100);
+      if (riskPct.greaterThan(this.limits.maxRiskPerTradePct)) {
+        blockReasons.push(
+          `loss at stop would be ${toFixedString(riskPct)}% of equity, above ` +
+            `MAX_RISK_PER_TRADE_PCT ${toFixedString(this.limits.maxRiskPerTradePct)}% ` +
+            `(reduce MAX_LEVERAGE or widen the stop)`,
+        );
+        return { approved: false, blockReasons, warnings };
+      }
     }
 
     if (dec(sizing.breakdown.notionalAtEntry).lessThan(this.limits.minNotional)) {
@@ -433,6 +472,8 @@ export class RiskEngine {
       };
     }
 
+    const leverageMode = this.limits.sizingMode === 'leverage';
+
     const riskBudget = equity.times(this.limits.riskPerTradeBps).div(10_000);
     const quantityByRisk = stopDistance.greaterThan(0) ? riskBudget.div(stopDistance) : new Decimal(0);
 
@@ -451,7 +492,7 @@ export class RiskEngine {
     // freeCollateralLimit = the smaller of (leverage-limited notional / entry)
     // and (free collateral beyond the configured floor) * max leverage / entry.
     const usableCollateral = Decimal.max(
-      state.freeCollateral.minus(this.limits.minFreeCollateralUsd),
+      state.freeCollateral.minus(this.collateralFloor(equity)),
       new Decimal(0),
     );
     const freeCollateralLimit = Decimal.min(
@@ -463,14 +504,29 @@ export class RiskEngine {
     const arcusMaxPosition = dec(market.maxOrderSize);
     const leverageLimit = equity.times(effectiveLeverage).div(entry);
 
-    const candidates: { name: string; value: Decimal }[] = [
-      { name: 'quantityByRisk', value: quantityByRisk },
-      { name: 'quantityByNotional', value: quantityByNotional },
-      { name: 'freeCollateralLimit', value: freeCollateralLimit },
-      { name: 'marketMaxPosition', value: marketMaxPosition },
-      { name: 'arcusMaxPosition', value: arcusMaxPosition },
-      { name: 'leverageLimit', value: leverageLimit },
-    ];
+    /**
+     * `leverage` mode sizes at MAX_LEVERAGE x equity and DROPS the risk/notional caps.
+     *
+     * Keeping them would make the mode inert: sizing off a 25 bps risk budget with a ~1%
+     * stop yields ~26% of equity, so a leverage cap of 2x — let alone 100%+ — would never
+     * bind. The loss implied by the stop is bounded separately by
+     * MAX_RISK_PER_TRADE_PCT in `evaluate`.
+     */
+    const candidates: { name: string; value: Decimal }[] = leverageMode
+      ? [
+          { name: 'leverageLimit', value: leverageLimit },
+          { name: 'freeCollateralLimit', value: freeCollateralLimit },
+          { name: 'marketMaxPosition', value: marketMaxPosition },
+          { name: 'arcusMaxPosition', value: arcusMaxPosition },
+        ]
+      : [
+          { name: 'quantityByRisk', value: quantityByRisk },
+          { name: 'quantityByNotional', value: quantityByNotional },
+          { name: 'freeCollateralLimit', value: freeCollateralLimit },
+          { name: 'marketMaxPosition', value: marketMaxPosition },
+          { name: 'arcusMaxPosition', value: arcusMaxPosition },
+          { name: 'leverageLimit', value: leverageLimit },
+        ];
     const binding = candidates.reduce((min, cur) => (cur.value.lessThan(min.value) ? cur : min), candidates[0]!);
 
     const stepSize = dec(market.stepSize);

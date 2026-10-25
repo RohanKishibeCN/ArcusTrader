@@ -345,6 +345,54 @@ trade**, because a 1R:1R payoff needs >50% before costs and it delivers 42.9%. C
 
 ---
 
+### Leverage: `SIZING_MODE`
+
+Position size is not a fixed amount — it is always derived from equity as a percentage,
+so the same config works on any account size.
+
+| | `SIZING_MODE=risk` (default) | `SIZING_MODE=leverage` |
+| --- | --- | --- |
+| Size set by | stop distance: `equity × RISK_PER_TRADE_BPS / stopDistance` | `equity × MAX_LEVERAGE` |
+| `MAX_LEVERAGE` | a ceiling that never binds | **the actual dial** |
+| Loss at stop | `RISK_PER_TRADE_BPS` (bounded by design) | whatever the stop implies, capped by `MAX_RISK_PER_TRADE_PCT` |
+
+With `risk` sizing, a 25 bps risk budget and a ~1% stop produce a position of roughly
+**26% of equity** — so `MAX_LEVERAGE=2` is 8× looser than what actually binds, and changing
+it does nothing. That is why leverage "felt off": it was never the constraint.
+
+To actually trade at 10×:
+
+```bash
+SIZING_MODE=leverage
+MAX_LEVERAGE=10
+MAX_ORDER_NOTIONAL_PCT=1000   # must be >= MAX_LEVERAGE x 100, else startup refuses
+MAX_RISK_PER_TRADE_PCT=15     # refuse if the stop-out would lose more than 15% of equity
+```
+
+Three things to know before doing that:
+
+1. **The venue leverage must be set too.** Sizing is capped by the *smaller* of
+   `MAX_LEVERAGE` and the leverage actually configured on Arcus for that market
+   (`effectiveLeverage`, read back from `/v1/leverages`). Selecting 10× in config while the
+   account sits at 2× sizes at 2×.
+2. **Fees do not scale down with fewer, bigger trades.** $1M of notional costs ~$450 at the
+   4.5 bps taker tier, or ~$150 at 1.5 bps maker — **122% or 41% of a 369 USDG account** —
+   regardless of leverage. Measured on this account: $465,834 of volume cost $134
+   (≈2.9 bps), so $1M is ≈$288.
+3. **Losses scale with leverage exactly as volume does.** At 10× the measured scalp
+   expectancy of −0.34R becomes ≈**−3.2% of equity per trade**; at 2 trades/day that is
+   ≈−6% per day. Leverage changes *when* the account is exhausted, not *whether*.
+
+Approximate time to $1M of volume at 10× (369 equity, $3,690 notional, $7,380 round trip):
+
+| Trades / day | Volume / day | To $1M |
+| --- | --- | --- |
+| 2 (measured scalp rate) | $14,760 | ~68 days |
+| 5 | $36,900 | ~27 days |
+| 10 | $73,800 | ~14 days |
+
+---
+
 ## Configuration
 
 Every setting is documented inline in [`.env.example`](.env.example) and validated in

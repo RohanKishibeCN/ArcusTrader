@@ -69,7 +69,10 @@ function limits(overrides: Partial<RiskLimits> = {}): RiskLimits {
     maxOpenPositions: 1,
     maxMarketsPerAccount: 1,
     maxConsecutiveLosses: 3,
-    minFreeCollateralUsd: dec('50'),
+    minFreeCollateralPct: dec('0'),
+  sizingMode: 'risk',
+  maxRiskPerTradePct: dec('100'),
+  minFreeCollateralUsd: dec('50'),
     maxOrderNotionalPct: dec('30'),
     minNotional: dec('5'),
     minOrderSize: undefined,
@@ -1544,5 +1547,117 @@ describe('dynamic equity and recalibration', () => {
       safetyReservePct: dec('20'),
     });
     expect(result.withdrawable.greaterThanOrEqualTo(0)).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * SIZING_MODE: risk vs leverage
+ *
+ * The property that matters: `MAX_LEVERAGE` must be a real dial in `leverage` mode and
+ * a pure ceiling in `risk` mode. Before this, `MAX_LEVERAGE` was inert — the risk budget
+ * always bound first, so a leverage setting of 10 produced exactly the same position as
+ * a setting of 2.
+ * ------------------------------------------------------------------ */
+describe('sizing mode', () => {
+  /**
+   * `effectiveLeverage` is the leverage actually set on the venue (read back from
+   * Arcus), not the config ceiling. Leverage sizing is capped by the SMALLER of the two,
+   * which is why every case here sets it explicitly: selecting 10x in config while the
+   * account still sits at 2x must size at 2x.
+   *
+   * The stop is 2% away (50000 -> 49000), so at L-times leverage the loss at the stop is
+   * L x 2% of equity.
+   */
+  const at = (limitsOverride: Partial<RiskLimits>, stateOverride: Record<string, unknown> = {}) => {
+    const engine = new RiskEngine(limits(limitsOverride), logger);
+    return engine.computeSizing(proposal(), riskState(stateOverride), market());
+  };
+
+  it('risk mode sizes off the stop, so leverage never binds', () => {
+    const sizing = at({ sizingMode: 'risk', maxLeverage: dec('2') });
+    // riskBudget 25 / stopDistance 1000 = 0.025 units => 1,250 notional.
+    expect(Number(sizing.breakdown.notionalAtEntry)).toBeCloseTo(1250, 2);
+    expect(sizing.breakdown.bindingConstraint).toBe('quantityByRisk');
+  });
+
+  it('leverage mode sizes at the effective leverage, not the risk budget', () => {
+    const sizing = at(
+      { sizingMode: 'leverage', maxLeverage: dec('10'), maxOrderNotionalPct: dec('1000') },
+      // Free collateral equals equity here, so leverage — not a cash shortfall — is the
+      // limit being measured.
+      { effectiveLeverage: dec('10'), freeCollateral: dec('10000') },
+    );
+    expect(Number(sizing.breakdown.notionalAtEntry)).toBeGreaterThan(95_000);
+    expect(Number(sizing.breakdown.notionalAtEntry)).toBeLessThanOrEqual(100_000);
+    expect(sizing.breakdown.bindingConstraint).not.toBe('quantityByRisk');
+  });
+
+  it('makes MAX_LEVERAGE a real dial instead of an inert ceiling', () => {
+    const two = at(
+      { sizingMode: 'leverage', maxLeverage: dec('2'), maxOrderNotionalPct: dec('2000') },
+      { effectiveLeverage: dec('2') },
+    );
+    const ten = at(
+      { sizingMode: 'leverage', maxLeverage: dec('10'), maxOrderNotionalPct: dec('2000') },
+      { effectiveLeverage: dec('10') },
+    );
+    // Same account, same stop: size scales with the leverage setting.
+    const ratio = Number(ten.breakdown.notionalAtEntry) / Number(two.breakdown.notionalAtEntry);
+    expect(ratio).toBeGreaterThan(4.5);
+    expect(ratio).toBeLessThan(5.5);
+  });
+
+  it('caps at the venue leverage, not the config value', () => {
+    // Config asks for 20x but the account is only set to 2x: the smaller wins.
+    const sizing = at(
+      { sizingMode: 'leverage', maxLeverage: dec('20'), maxOrderNotionalPct: dec('2000') },
+      { effectiveLeverage: dec('2') },
+    );
+    expect(Number(sizing.breakdown.notionalAtEntry)).toBeLessThanOrEqual(20_000);
+  });
+
+  it('refuses when the stop-out would exceed MAX_RISK_PER_TRADE_PCT', () => {
+    // 10x against a 2% stop loses 20% of equity; the cap is 10%.
+    const engine = new RiskEngine(
+      limits({
+        sizingMode: 'leverage',
+        maxLeverage: dec('10'),
+        maxOrderNotionalPct: dec('1000'),
+        maxRiskPerTradePct: dec('10'),
+      }),
+      logger,
+    );
+    const decision = engine.evaluateEntry(
+      proposal(),
+      riskState({ effectiveLeverage: dec('10') }),
+    );
+    expect(decision.approved).toBe(false);
+    expect(decision.blockReasons.join(' ')).toMatch(/MAX_RISK_PER_TRADE_PCT/);
+  });
+
+  it('permits a stop-out exactly at the configured cap', () => {
+    const engine = new RiskEngine(
+      limits({
+        sizingMode: 'leverage',
+        maxLeverage: dec('10'),
+        maxOrderNotionalPct: dec('1000'),
+        maxRiskPerTradePct: dec('20'),
+      }),
+      logger,
+    );
+    const decision = engine.evaluateEntry(
+      proposal(),
+      riskState({ effectiveLeverage: dec('10') }),
+    );
+    expect(decision.approved).toBe(true);
+  });
+
+  it('never sizes above the market maximum order size', () => {
+    const sizing = at(
+      { sizingMode: 'leverage', maxLeverage: dec('20'), maxOrderNotionalPct: dec('2000') },
+      { effectiveLeverage: dec('20'), marketMaxOrderSize: dec('0.5') },
+    );
+    expect(sizing.breakdown.bindingConstraint).toBe('marketMaxPosition');
+    expect(sizing.quantity.toFixed()).toBe('0.5');
   });
 });

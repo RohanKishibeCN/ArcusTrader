@@ -119,7 +119,24 @@ export const configSchema = z
     REQUIRE_EXPLICIT_LIVE_CONFIRMATION: boolFromEnv.default(true),
 
     /* ---- risk ------------------------------------------------------- */
+    /**
+     * How position size is decided.
+     *
+     *  - `risk` (default): size so that hitting the stop loses RISK_PER_TRADE_BPS of
+     *    equity. Position size therefore adapts to the stop distance, and the leverage
+     *    cap is only a ceiling that is almost never reached.
+     *  - `leverage`: size at exactly MAX_LEVERAGE x equity (bounded by free collateral
+     *    and the market's own limit). This is what actually uses leverage; the loss on a
+     *    stop-out becomes a consequence rather than a target, so it is bounded instead by
+     *    MAX_RISK_PER_TRADE_PCT.
+     */
+    SIZING_MODE: z.enum(['risk', 'leverage']).default('risk'),
     MAX_LEVERAGE: decimalFromEnv.default('2'),
+    /**
+     * Leverage mode only: refuse an entry whose stop-out would lose more than this
+     * percentage of equity. Percentage (not a dollar amount) so it scales with capital.
+     */
+    MAX_RISK_PER_TRADE_PCT: decimalFromEnv.default('10'),
     RISK_PER_TRADE_BPS: decimalFromEnv.default('25'),
     DAILY_LOSS_LIMIT_BPS: decimalFromEnv.default('100'),
     MAX_NOTIONAL_PCT: decimalFromEnv.default('30'),
@@ -131,6 +148,12 @@ export const configSchema = z
     EQUITY_CHANGE_PAUSE_BPS: decimalFromEnv.default('1000'),
     /** Absolute floor on free collateral below which no new position is sized. */
     MIN_FREE_COLLATERAL_USD: decimalFromEnv.default('50'),
+    /**
+     * Collateral floor as a PERCENTAGE of equity. The effective floor is the larger of
+     * this and MIN_FREE_COLLATERAL_USD, so a fixed dollar floor stops dominating as the
+     * account grows. 0 disables the percentage form.
+     */
+    MIN_FREE_COLLATERAL_PCT: decimalFromEnv.default('0'),
     /** Safety reserve excluded from the theoretical withdrawable balance. */
     WITHDRAWABLE_SAFETY_RESERVE_PCT: decimalFromEnv.default('20'),
     /** Explicitly NOT configurable to a non-zero value by env; see config.ts guard. */
@@ -536,6 +559,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!(dec(raw.DAILY_LOSS_LIMIT_BPS) > 0)) issues.push('DAILY_LOSS_LIMIT_BPS must be > 0.');
   if (!(dec(raw.MAX_LEVERAGE) > 0) || dec(raw.MAX_LEVERAGE) > 20) {
     issues.push('MAX_LEVERAGE must be in (0, 20].');
+  }
+  if (!(dec(raw.MAX_RISK_PER_TRADE_PCT) > 0) || dec(raw.MAX_RISK_PER_TRADE_PCT) > 100) {
+    issues.push('MAX_RISK_PER_TRADE_PCT must be in (0, 100].');
+  }
+  // Leverage sizing is gated by MAX_ORDER_NOTIONAL_PCT as well, so the two must agree:
+  // MAX_LEVERAGE=10 needs a 1000% notional allowance or every order would be refused by
+  // the notional check instead of being sized. Refusing at startup beats a running bot
+  // that silently never trades.
+  if (
+    raw.SIZING_MODE === 'leverage' &&
+    Number(raw.MAX_ORDER_NOTIONAL_PCT) < Number(raw.MAX_LEVERAGE) * 100
+  ) {
+    issues.push(
+      `SIZING_MODE=leverage with MAX_LEVERAGE=${raw.MAX_LEVERAGE} requires ` +
+        `MAX_ORDER_NOTIONAL_PCT >= ${Number(raw.MAX_LEVERAGE) * 100} (got ${raw.MAX_ORDER_NOTIONAL_PCT}).`,
+    );
+  }
+  if (!(Number(raw.MIN_FREE_COLLATERAL_PCT) >= 0) || Number(raw.MIN_FREE_COLLATERAL_PCT) >= 100) {
+    issues.push('MIN_FREE_COLLATERAL_PCT must be in [0, 100).');
   }
   if (dec(raw.RISK_PER_TRADE_BPS) > 2000) {
     issues.push('RISK_PER_TRADE_BPS above 2000 (20% per trade) is refused as a misconfiguration.');
