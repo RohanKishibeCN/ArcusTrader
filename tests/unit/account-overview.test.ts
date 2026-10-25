@@ -147,6 +147,8 @@ function baseInput(overrides: Partial<DailyReportInput> = {}): DailyReportInput 
     averageHoldMs: 0,
     positions: [],
     strategyState: 'flat',
+    strategyMode: 'swing',
+    strategyTimeframes: { trend: '4h', structure: '1h', trigger: '15m' },
     activeMarket: 'SOL-USD',
     candidateMarkets: [],
     offHoursEntriesAllowed: false,

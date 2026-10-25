@@ -270,7 +270,11 @@ export async function runPreflight(context: Awaited<ReturnType<typeof bootstrap>
   const lines: string[] = [];
 
   /* 1. config */
-  lines.push(`[ok]   configuration validated (mode=${config.raw.TRADING_MODE}, live=${config.liveRequested})`);
+  lines.push(
+    `[ok]   configuration validated (mode=${config.raw.TRADING_MODE}, ` +
+      `strategy=${config.raw.STRATEGY_MODE} ${config.raw.TREND_TIMEFRAME}/${config.raw.STRUCTURE_TIMEFRAME}/${config.raw.TRIGGER_TIMEFRAME}, ` +
+      `live=${config.liveRequested})`,
+  );
   for (const note of config.notes) lines.push(`[note] ${note}`);
 
   /* 2. kill switch */

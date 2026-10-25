@@ -111,6 +111,10 @@ export interface DailyReportInput {
 
   /* Strategy / system state */
   readonly strategyState: string;
+  /** Active preset name (`swing` | `scalp`). */
+  readonly strategyMode: string;
+  /** The three clocks that preset runs on. */
+  readonly strategyTimeframes: { readonly trend: string; readonly structure: string; readonly trigger: string };
   readonly activeMarket?: string;
   readonly candidateMarkets: readonly {
     symbol: string;
@@ -347,6 +351,9 @@ export function renderReportMarkdown(input: DailyReportInput): string[] {
   sections.push(
     [
       '**Strategy & system**',
+      // Naming the mode and its clocks makes a report self-explaining: the same account
+      // can produce very different trade counts under `swing` and `scalp`.
+      `- Strategy mode: \`${input.strategyMode}\` (${input.strategyTimeframes.trend}/${input.strategyTimeframes.structure}/${input.strategyTimeframes.trigger})`,
       `- Strategy state: \`${input.strategyState}\``,
       `- Active market: ${input.activeMarket ?? 'none'}`,
       `- Data age: ${input.dataAgeMs !== undefined ? `${input.dataAgeMs} ms` : 'n/a'} (limit is MAX_DATA_AGE_MS)`,

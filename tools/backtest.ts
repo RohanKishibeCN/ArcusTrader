@@ -24,6 +24,8 @@ import { ArcusRestClient } from '../src/arcus/ArcusRestClient';
 import { createLogger } from '../src/util/logger';
 import { readFile, writeFile } from 'node:fs/promises';
 import { dec } from '../src/util/decimal';
+import { loadConfig } from '../src/config/config';
+import { strategyConfigFrom } from '../src/app/bootstrap';
 import type { Candle, MarketInfo } from '../src/arcus/types';
 import type { StrategyConfig } from '../src/strategy/PullbackStrategy';
 import { replayMarkets, type ReplayConfig, type ReplayMarketInput, type ReplayResult } from './replay';
@@ -43,13 +45,19 @@ interface Args {
   trailingAtr: number | undefined;
   equity: string;
   riskBps: string;
-  /** Strategy overrides, for a sensitivity sweep. */
-  stopAtr: number;
-  tp1R: number;
-  tp2R: number;
-  zoneAtr: number;
-  maxExtensionAtr: number;
+  /**
+   * Strategy overrides for a sensitivity sweep. `undefined` means "use the mode's
+   * preset", so `--strategy scalp` alone measures the scalp configuration rather than
+   * the swing defaults with a different set of timeframes.
+   */
+  stopAtr: number | undefined;
+  tp1R: number | undefined;
+  tp2R: number | undefined;
+  tp1ClosePct: number | undefined;
+  zoneAtr: number | undefined;
+  maxExtensionAtr: number | undefined;
   stopBars: number;
+  strategy: 'swing' | 'scalp';
   makerFeeBps: number;
   takerFeeBps: number;
   /** Candle cache: fetch once, replay many parameter sets offline. */
@@ -68,12 +76,14 @@ function parseArgs(argv: readonly string[]): Args {
     trailingAtr: undefined,
     equity: '10000',
     riskBps: '25',
-    stopAtr: 0.5,
-    tp1R: 2,
-    tp2R: 3,
-    zoneAtr: 1.0,
-    maxExtensionAtr: 3.0,
+    stopAtr: undefined,
+    tp1R: undefined,
+    tp2R: undefined,
+    tp1ClosePct: undefined,
+    zoneAtr: undefined,
+    maxExtensionAtr: undefined,
     stopBars: 0,
+    strategy: 'swing',
     // Live base tier read from GET /v1/feetiers on 2026-10-25:
     // maker 150 ppm = 1.5 bps, taker 450 ppm = 4.5 bps.
     makerFeeBps: 1.5,
@@ -104,6 +114,7 @@ function parseArgs(argv: readonly string[]): Args {
       case '--zone-atr': out.zoneAtr = Number(next()); break;
       case '--max-extension-atr': out.maxExtensionAtr = Number(next()); break;
       case '--stop-bars': out.stopBars = Number(next()); break;
+      case '--strategy': out.strategy = next() === 'scalp' ? 'scalp' : 'swing'; break;
       case '--maker-fee-bps': out.makerFeeBps = Number(next()); break;
       case '--taker-fee-bps': out.takerFeeBps = Number(next()); break;
       case '--save': out.savePath = next(); break;
@@ -183,23 +194,26 @@ function sleep(ms: number): Promise<void> {
  * Strategy config (matches the runtime defaults)
  * ------------------------------------------------------------------ */
 
+/**
+ * Strategy parameters for the selected mode.
+ *
+ * Built from `loadConfig`, so the backtest uses exactly the geometry production would —
+ * including the mode's timeframes and TP1 close percentage. The CLI flags then act as
+ * overrides for sensitivity sweeps.
+ */
 function strategyConfig(args: Args): StrategyConfig {
+  const base = strategyConfigFrom(loadConfig({ STRATEGY_MODE: args.strategy }));
+  // Each override is applied only when explicitly provided.
   return {
-    emaFastPeriod: 9,
-    emaMidPeriod: 21,
-    emaSlowPeriod: 50,
-    atrPeriod: 14,
-    minHistoryBars: 250,
-    stopAtrBuffer: dec(String(args.stopAtr)),
-    maxExtensionAtr: dec(String(args.maxExtensionAtr)),
-    maxChaseAtr: dec('0.25'),
-    pullbackZoneAtr: dec(String(args.zoneAtr)),
-    tp1RMultiple: dec(String(args.tp1R)),
-    tp1ClosePct: dec('50'),
-    tp2RMultiple: dec(String(args.tp2R)),
-    structureLookback: 250,
-    swingLeftBars: 2,
-    swingRightBars: 2,
+    ...base,
+    ...(args.stopAtr !== undefined ? { stopAtrBuffer: dec(String(args.stopAtr)) } : {}),
+    ...(args.maxExtensionAtr !== undefined
+      ? { maxExtensionAtr: dec(String(args.maxExtensionAtr)) }
+      : {}),
+    ...(args.zoneAtr !== undefined ? { pullbackZoneAtr: dec(String(args.zoneAtr)) } : {}),
+    ...(args.tp1R !== undefined ? { tp1RMultiple: dec(String(args.tp1R)) } : {}),
+    ...(args.tp1ClosePct !== undefined ? { tp1ClosePct: dec(String(args.tp1ClosePct)) } : {}),
+    ...(args.tp2R !== undefined ? { tp2RMultiple: dec(String(args.tp2R)) } : {}),
     ...(args.stopBars > 0 ? { stopStructureBars: args.stopBars } : {}),
   };
 }
@@ -260,14 +274,30 @@ async function main(): Promise<void> {
   if (targets.length === 0) throw new Error('none of the requested markets exist');
 
   const days = Math.round(args.months * 30);
-  const counts = {
-    '4h': Math.min(1500, Math.ceil((days * 24) / 4) + 5),
-    '1h': Math.min(1500, Math.ceil(days * 24) + 5),
-    '15m': Math.ceil(days * 24 * 4) + 5,
+
+  /**
+   * The three clocks come from the SAME config the runtime would use for this mode, so a
+   * backtest cannot silently measure different timeframes than production runs.
+   */
+  const modeConfig = loadConfig({ STRATEGY_MODE: args.strategy });
+  const tf = {
+    trend: modeConfig.raw.TREND_TIMEFRAME,
+    structure: modeConfig.raw.STRUCTURE_TIMEFRAME,
+    trigger: modeConfig.raw.TRIGGER_TIMEFRAME,
   };
+  const barMinutes = (timeframe: string): number => {
+    const match = /^(\d+)([mhd])$/.exec(timeframe);
+    if (!match) throw new Error(`unsupported timeframe in config: ${timeframe}`);
+    const value = Number(match[1]);
+    return match[2] === 'm' ? value : match[2] === 'h' ? value * 60 : value * 1_440;
+  };
+  const barsFor = (timeframe: string): number =>
+    Math.ceil((days * 24 * 60) / barMinutes(timeframe)) + 5;
+
   console.log(
-    `Fetching history: ${days} days per market, ` +
-      `4h=${counts['4h']} 1h=${counts['1h']} 15m=${counts['15m']} bars\n`,
+    `Strategy ${args.strategy.toUpperCase()} (${tf.trend}/${tf.structure}/${tf.trigger}) — ` +
+      `fetching ${days} days per market: ` +
+      `${tf.trend}=${barsFor(tf.trend)} ${tf.structure}=${barsFor(tf.structure)} ${tf.trigger}=${barsFor(tf.trigger)} bars\n`,
   );
 
   const markets: ReplayMarketInput[] = [];
@@ -286,19 +316,25 @@ async function main(): Promise<void> {
     const symbol = market.marketDisplayName;
     process.stdout.write(`  ${symbol.padEnd(10)}`);
     try {
-      const t4h = await fetchHistory({ rest, symbol, timeframe: '4h', count: counts['4h'] });
-      const t1h = await fetchHistory({ rest, symbol, timeframe: '1h', count: counts['1h'] });
-      const t15m = await fetchHistory({ rest, symbol, timeframe: '15m', count: counts['15m'] });
-      if (t15m.length === 0) {
-        console.log(' no 15m data, skipping');
+      const trendCandles = await fetchHistory({
+        rest, symbol, timeframe: tf.trend, count: barsFor(tf.trend),
+      });
+      const structureCandles = await fetchHistory({
+        rest, symbol, timeframe: tf.structure, count: barsFor(tf.structure),
+      });
+      const triggerCandles = await fetchHistory({
+        rest, symbol, timeframe: tf.trigger, count: barsFor(tf.trigger),
+      });
+      if (triggerCandles.length === 0) {
+        console.log(` no ${tf.trigger} data, skipping`);
         continue;
       }
       console.log(
-        ` 4h=${t4h.length} 1h=${t1h.length} 15m=${t15m.length}` +
-          `  (${new Date(t15m[0]!.openTime / 1000).toISOString().slice(0, 10)} → ` +
-          `${new Date(t15m[t15m.length - 1]!.openTime / 1000).toISOString().slice(0, 10)})`,
+        ` ${tf.trend}=${trendCandles.length} ${tf.structure}=${structureCandles.length} ${tf.trigger}=${triggerCandles.length}` +
+          `  (${new Date(triggerCandles[0]!.openTime / 1000).toISOString().slice(0, 10)} → ` +
+          `${new Date(triggerCandles[triggerCandles.length - 1]!.openTime / 1000).toISOString().slice(0, 10)})`,
       );
-      markets.push({ market, trendCandles: t4h, structureCandles: t1h, triggerCandles: t15m });
+      markets.push({ market, trendCandles, structureCandles, triggerCandles });
     } catch (error) {
       console.log(` failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -359,6 +395,45 @@ async function main(): Promise<void> {
     console.log(`  profit factor    ${grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : 'n/a (no losing trades)'}`);
     console.log(`  expectancy       ${allTrades.length ? (net / allTrades.length).toFixed(2) : '0.00'} per trade`);
     console.log(`  maker fill rate  ${allTrades.length ? ((makerFills / allTrades.length) * 100).toFixed(1) : '0.0'}%`);
+
+    /* ---- Throughput ------------------------------------------------ *
+     * Answers "how much does this actually trade per day?", which is the question
+     * that decides whether a volume goal is even reachable. Reported per calendar
+     * day of the DATA WINDOW, not per trading day, so weekends/holidays on the
+     * equity markets count as zero-trade days — which is the honest denominator for
+     * "how many trades per day will I see".
+     */
+    {
+      const spansMs = allTrades.flatMap((t) => [t.entryTimeMs, t.exitTimeMs]);
+      const firstMs = Math.min(...spansMs);
+      const lastMs = Math.max(...spansMs);
+      const days = Math.max(1, (lastMs - firstMs) / 86_400_000);
+
+      const notionalOf = (t: { entryPrice: string; quantity: string }): number =>
+        Math.abs(Number(t.entryPrice) * Number(t.quantity));
+      const totalNotional = allTrades.reduce((a, t) => a + notionalOf(t), 0);
+      const avgNotional = allTrades.length > 0 ? totalNotional / allTrades.length : 0;
+      // A round trip trades the entry notional twice (in and out).
+      const roundTripNotional = totalNotional * 2;
+
+      const holds = allTrades
+        .map((t) => t.exitTimeMs - t.entryTimeMs)
+        .filter((ms) => ms >= 0);
+      const avgHoldHours =
+        holds.length > 0 ? holds.reduce((a, b) => a + b, 0) / holds.length / 3_600_000 : 0;
+
+      console.log(
+        `  trades / day     ${(allTrades.length / days).toFixed(3)}  (${allTrades.length} over ${days.toFixed(0)} days)`,
+      );
+      console.log(
+        `  notional / trade ${avgNotional.toFixed(0)}  |  notional / day ${(totalNotional / days).toFixed(0)}`,
+      );
+      console.log(
+        `  volume / day     ${(roundTripNotional / days).toFixed(0)} (round trip)  |  total ${roundTripNotional.toFixed(0)}`,
+      );
+      console.log(`  avg hold         ${avgHoldHours.toFixed(1)} h`);
+      console.log(`  days to $1M      ${roundTripNotional > 0 ? (1_000_000 / (roundTripNotional / days)).toFixed(0) : 'n/a'}`);
+    }
     console.log(`  worst mkt DD     ${worstDd.toFixed(2)}%`);
     const avgR = allTrades.map((t) => t.rMultiple).filter((r): r is string => r !== undefined);
     console.log(`  avg R            ${avgR.length ? (avgR.reduce((a, r) => a + Number(r), 0) / avgR.length).toFixed(2) : 'n/a'}`);

@@ -138,6 +138,20 @@ export const configSchema = z
     ALLOW_AUTO_WITHDRAW: boolFromEnv.default(false),
 
     /* ---- strategy --------------------------------------------------- */
+    /**
+     * Which strategy preset to run.
+     *
+     *  - `swing` (default): 4h trend / 1h structure / 15m trigger pullback. Holds for
+     *    ~2 days. Designed for edge per trade, not for turnover.
+     *  - `scalp`: 1h trend / 15m structure / 5m trigger, 1R full exit. Same entry
+     *    logic, tuned for a short hold and more trades. Turnover is much higher, but
+     *    so is cost drag per unit of edge.
+     *
+     * The preset only fills in values you did NOT set: any explicit env var wins, so a
+     * single knob can still be overridden on top of a preset. This is why the preset is
+     * applied before validation, from the raw env record.
+     */
+    STRATEGY_MODE: z.enum(['swing', 'scalp']).default('swing'),
     TREND_TIMEFRAME: z.enum(['1h', '2h', '4h', '8h', '12h', '1d']).default('4h'),
     STRUCTURE_TIMEFRAME: z.enum(['15m', '30m', '1h', '2h', '4h']).default('1h'),
     TRIGGER_TIMEFRAME: z.enum(['5m', '15m', '30m']).default('15m'),
@@ -157,6 +171,10 @@ export const configSchema = z
     PULLBACK_ZONE_ATR: decimalFromEnv.default('1.0'),
     /** TP1 in R multiples, and the fraction closed there. */
     TP1_R_MULTIPLE: decimalFromEnv.default('2'),
+    /**
+     * Percent of the position closed at TP1. `100` means the whole position exits there
+     * and there is no runner (TP2 is then unused).
+     */
     TP1_CLOSE_PCT: decimalFromEnv.default('50'),
     TP2_R_MULTIPLE: decimalFromEnv.default('3'),
     /** Trailing stop period on the remainder, in trigger-TF bars. */
@@ -385,8 +403,51 @@ export {
  * Validation failures are collected and thrown together, so a misconfigured VPS
  * reports every problem in one pass instead of one restart at a time.
  */
+/**
+ * Per-mode defaults for the keys that actually differ.
+ *
+ * `swing` is empty on purpose: the schema defaults ARE the swing preset, so a swing run
+ * is byte-identical to the behaviour before this option existed.
+ */
+const STRATEGY_PRESETS: Record<'swing' | 'scalp', Record<string, string | number>> = {
+  swing: {},
+  scalp: {
+    // Faster clocks. 5m trigger is the lowest the schema permits (1m is excluded).
+    TREND_TIMEFRAME: '1h',
+    STRUCTURE_TIMEFRAME: '15m',
+    TRIGGER_TIMEFRAME: '5m',
+    // 120 structure bars of 15m ≈ 30h of warmup instead of 250 x 1h ≈ 10 days.
+    MIN_HISTORY_BARS: 120,
+    // Tighter geometry: a scalp wants a small, quick invalidation.
+    STOP_ATR_BUFFER: '0.35',
+    MAX_EXTENSION_ATR: '1.5',
+    MAX_CHASE_ATR: '0.15',
+    PULLBACK_ZONE_ATR: '0.6',
+    // Full exit at 1R: no runner, so the position is flat again quickly. This is what
+    // creates turnover; it also caps the payoff at 1R against a 1R loss.
+    TP1_R_MULTIPLE: '1',
+    TP1_CLOSE_PCT: '100',
+    TP2_R_MULTIPLE: '1.5',
+    // A resting entry that has not filled in two trigger bars is stale for a scalp.
+    ENTRY_ORDER_TTL_BARS: 2,
+    // Re-rank more often so the single active market follows opportunities.
+    MARKET_RERANK_INTERVAL_MS: 300_000,
+  },
+};
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = configSchema.safeParse(env);
+  const mode = configSchema.shape.STRATEGY_MODE.safeParse(env.STRATEGY_MODE ?? 'swing');
+  const modeName = mode.success ? mode.data : 'swing';
+  const preset = STRATEGY_PRESETS[modeName];
+
+  // Apply the preset ONLY to keys absent from the environment. An explicit value always
+  // wins, so `STRATEGY_MODE=scalp TP1_R_MULTIPLE=1.5` is honoured rather than ignored.
+  const withPreset: NodeJS.ProcessEnv = { ...env };
+  for (const [key, value] of Object.entries(preset)) {
+    if (withPreset[key] === undefined) withPreset[key] = String(value);
+  }
+
+  const parsed = configSchema.safeParse(withPreset);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
       (i) => `${i.path.join('.') || '(root)'}: ${i.message}`,
@@ -482,8 +543,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!(dec(raw.MAX_NOTIONAL_PCT) > 0) || dec(raw.MAX_NOTIONAL_PCT) > 100) {
     issues.push('MAX_NOTIONAL_PCT must be in (0, 100].');
   }
-  if (dec(raw.TP1_CLOSE_PCT) <= 0 || dec(raw.TP1_CLOSE_PCT) >= 100) {
-    issues.push('TP1_CLOSE_PCT must be in (0, 100).');
+  // (0, 100]: 100 is allowed and means "close the whole position at TP1", i.e. there is
+  // no runner. The replay engine already models that (a scale-out equal to the remaining
+  // size finishes the trade at TP1), and it is what makes a full-exit scalp possible.
+  // Values above 100 are refused because they would imply a negative runner.
+  if (dec(raw.TP1_CLOSE_PCT) <= 0 || dec(raw.TP1_CLOSE_PCT) > 100) {
+    issues.push('TP1_CLOSE_PCT must be in (0, 100]. 100 means close everything at TP1.');
   }
   if (dec(raw.TP2_R_MULTIPLE) < dec(raw.TP1_R_MULTIPLE)) {
     issues.push('TP2_R_MULTIPLE must be >= TP1_R_MULTIPLE.');

@@ -294,6 +294,57 @@ bindings rejected by both drivers) and logs which driver it selected.
 
 ---
 
+## Two strategy modes: `swing` and `scalp`
+
+`STRATEGY_MODE` selects one of two presets. Same entry logic, different clocks and exit
+geometry:
+
+| | **`swing`** (default) | **`scalp`** |
+| --- | --- | --- |
+| Clocks | 4h / 1h / 15m | 1h / 15m / 5m |
+| TP1 | 2R, close 50% | 1R, close **100%** (no runner) |
+| Entry TTL | 4 bars | 2 bars |
+| Re-rank | hourly | every 5 min |
+| Warmup | 250×4h ≈ 41 days | 120×15m ≈ 30 h |
+
+```bash
+STRATEGY_MODE=swing pnpm start     # band-following pullback, holds days
+STRATEGY_MODE=scalp pnpm start     # same logic, holds hours, trades ~6x more
+```
+
+A preset only fills in values you did **not** set, so a single knob can still be
+overridden on top of it: `STRATEGY_MODE=scalp TP1_R_MULTIPLE=1.5` keeps the scalp clocks
+and changes only the target. The active mode and its clocks are printed at startup and in
+every daily report, so a report can never be misread as the other mode.
+
+### Measured comparison (SOL-USD, real candles, 369 equity)
+
+| Metric | `swing` (3 months) | `scalp` (1 month) |
+| --- | --- | --- |
+| Trades / day | **0.32** | **1.96** |
+| Notional / trade | $61 | $97 |
+| Volume / day (round trip) | **$40** | **$381** |
+| Win rate | 37.5% | **42.9%** |
+| Profit factor | 0.98 | 0.58 |
+| Avg R | −0.10 | −0.34 |
+| Avg hold | 59 h | **5.4 h** |
+| Stop exits | 75% | 57% |
+| Days to $1M volume | **25,210** | **2,622** |
+
+Scalp produces **9.5× the volume** and **6× the trade count**, and its win rate is much
+higher (1R targets are easier to reach than 2R) — but it is also **less profitable per
+trade**, because a 1R:1R payoff needs >50% before costs and it delivers 42.9%. Cost is
+155% of gross PnL on the scalp versus 115% on the swing.
+
+> **Neither mode reaches $1M of volume on a 369 USDG account in any useful time.** The
+> binding constraint is not the strategy but `MAX_NOTIONAL_PCT × equity` ≈ $110 per
+> position: volume/day ≈ 2 × trades/day × notional. Hitting $1M in 30 days would need
+> ~150 round trips/day at that size, or roughly **$28,000 of equity** at the scalp's
+> ~2 trades/day. Turning `MAX_NOTIONAL_PCT` up instead would multiply the loss, since
+> both modes currently have negative expectancy.
+
+---
+
 ## Configuration
 
 Every setting is documented inline in [`.env.example`](.env.example) and validated in

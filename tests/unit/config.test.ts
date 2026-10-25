@@ -262,3 +262,66 @@ describe('credentials never appear in the described configuration', () => {
     expect(dec('1').toFixed()).toBe('1');
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Strategy presets: `swing` and `scalp`
+ * ------------------------------------------------------------------ */
+describe('strategy mode presets', () => {
+  it('defaults to swing and reproduces the pre-selector configuration', () => {
+    const config = loadConfig({});
+    expect(config.raw.STRATEGY_MODE).toBe('swing');
+    // These are the values the system always used; the selector must not move them.
+    expect(config.raw.TREND_TIMEFRAME).toBe('4h');
+    expect(config.raw.STRUCTURE_TIMEFRAME).toBe('1h');
+    expect(config.raw.TRIGGER_TIMEFRAME).toBe('15m');
+    expect(config.raw.TP1_R_MULTIPLE).toBe('2');
+    expect(config.raw.TP1_CLOSE_PCT).toBe('50');
+    expect(config.raw.ENTRY_ORDER_TTL_BARS).toBe(4);
+  });
+
+  it('scalp moves to faster clocks and a full exit at 1R', () => {
+    const config = loadConfig({ STRATEGY_MODE: 'scalp' });
+    expect(config.raw.TREND_TIMEFRAME).toBe('1h');
+    expect(config.raw.STRUCTURE_TIMEFRAME).toBe('15m');
+    expect(config.raw.TRIGGER_TIMEFRAME).toBe('5m');
+    expect(config.raw.TP1_R_MULTIPLE).toBe('1');
+    expect(config.raw.TP1_CLOSE_PCT).toBe('100');
+    expect(config.raw.ENTRY_ORDER_TTL_BARS).toBe(2);
+    // 120 structure bars of 15m ≈ 30h of warmup instead of 250 x 1h ≈ 10 days.
+    expect(config.raw.MIN_HISTORY_BARS).toBe(120);
+  });
+
+  it('lets an explicit value win over the preset', () => {
+    // The whole point of presets: pick a starting point, then override one knob.
+    const config = loadConfig({ STRATEGY_MODE: 'scalp', TP1_R_MULTIPLE: '1.5' });
+    expect(config.raw.TP1_R_MULTIPLE).toBe('1.5');
+    // Everything else still comes from the preset.
+    expect(config.raw.TRIGGER_TIMEFRAME).toBe('5m');
+  });
+
+  it('rejects an unknown mode instead of silently falling back', () => {
+    expect(() => loadConfig({ STRATEGY_MODE: 'scalping' })).toThrow(ConfigError);
+  });
+
+  it('keeps the timeframe ordering valid in both modes', () => {
+    // trigger < structure < trend is enforced, so a future preset cannot smuggle in an
+    // inverted stack.
+    for (const mode of ['swing', 'scalp'] as const) {
+      const config = loadConfig({ STRATEGY_MODE: mode });
+      const order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+      expect(order.indexOf(config.raw.TRIGGER_TIMEFRAME)).toBeLessThan(
+        order.indexOf(config.raw.STRUCTURE_TIMEFRAME),
+      );
+      expect(order.indexOf(config.raw.STRUCTURE_TIMEFRAME)).toBeLessThan(
+        order.indexOf(config.raw.TREND_TIMEFRAME),
+      );
+    }
+  });
+
+  it('allows TP1_CLOSE_PCT=100 (full exit, no runner) but not above', () => {
+    // 100 is what makes the scalp preset a clean full exit rather than leaving dust.
+    expect(() => loadConfig({ TP1_CLOSE_PCT: '100' })).not.toThrow();
+    expect(loadConfig({ TP1_CLOSE_PCT: '100' }).raw.TP1_CLOSE_PCT).toBe('100');
+    expect(() => loadConfig({ TP1_CLOSE_PCT: '100.1' })).toThrow(ConfigError);
+  });
+});

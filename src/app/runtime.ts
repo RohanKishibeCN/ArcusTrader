@@ -1788,6 +1788,12 @@ export class Runtime {
       exchange: raw.ARCUS_REST_URL,
       tradingMode: raw.TRADING_MODE,
       liveTrading: this.context.orderSubmissionAllowed,
+      strategyMode: raw.STRATEGY_MODE,
+      strategyTimeframes: {
+        trend: raw.TREND_TIMEFRAME,
+        structure: raw.STRUCTURE_TIMEFRAME,
+        trigger: raw.TRIGGER_TIMEFRAME,
+      },
       equity,
       freeCollateral,
       usedMargin,
