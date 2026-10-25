@@ -479,6 +479,19 @@ export class Runtime {
    * Ordered by published 24h notional, so the sample covers the markets most
    * likely to qualify on liquidity, and capped by `MAX_BREADTH_QUOTES`.
    */
+  /**
+   * Whether a market is inside the operator's pinned universe.
+   *
+   * Checked in BOTH filter sites on purpose: the breadth sample decides which markets
+   * are quoted, and the ranking loop decides which may become active. Letting only one
+   * honour the allowlist would quote markets that can never be selected.
+   */
+  private isAllowlisted(market: MarketInfo): boolean {
+    const allow = this.context.config.raw.MARKET_ALLOWLIST;
+    if (allow.length === 0) return true;
+    return allow.includes(market.marketDisplayName.toUpperCase());
+  }
+
   private breadthSample(): readonly MarketInfo[] {
     const raw = this.context.config.raw;
     const markets = this.context.markets.getMarkets().value;
@@ -488,7 +501,7 @@ export class Runtime {
         const isRwa = isRwaCategory(market.category);
         if (isRwa && !raw.PREFER_RWA) return false;
         if (!isRwa && !raw.ALLOW_CRYPTO) return false;
-        return true;
+        return this.isAllowlisted(market);
       })
       .sort((a, b) => {
         const av = a.volume24hNotional ? dec(a.volume24hNotional) : dec('0');
@@ -575,6 +588,7 @@ export class Runtime {
 
     for (const market of marketsSnapshot.value) {
       if (market.status !== 'ONLINE') continue;
+      if (!this.isAllowlisted(market)) continue;
       const isRwa = isRwaCategory(market.category);
       if (isRwa && !raw.PREFER_RWA && !raw.ALLOW_CRYPTO) continue;
       if (!isRwa && !raw.ALLOW_CRYPTO) continue;

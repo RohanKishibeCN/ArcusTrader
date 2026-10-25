@@ -93,6 +93,21 @@ const optionalString = z
 const tradeModeSchema = z.enum(['dry_run', 'shadow', 'live']).default('dry_run');
 const logLevelSchema = z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info');
 
+/**
+ * Comma-separated symbol list from an env string. Empty / whitespace means "no list",
+ * which is the meaningful default (no restriction) rather than an empty allowlist that
+ * would refuse every market.
+ */
+const symbolListFromEnv = z
+  .string()
+  .optional()
+  .transform((value) =>
+    (value ?? '')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => s.length > 0),
+  );
+
 export const configSchema = z
   .object({
     /* ---- environment ------------------------------------------------ */
@@ -234,6 +249,15 @@ export const configSchema = z
     PREFER_RWA: boolFromEnv.default(true),
     ALLOW_CRYPTO: boolFromEnv.default(true),
     ALLOW_RWA_OFF_HOURS: boolFromEnv.default(false),
+    /**
+     * Optional hard allowlist of symbols. Empty = rank every market as usual.
+     *
+     * Exists because market SELECTION is a strategy parameter, not a preference: a
+     * backtest over wide-spread, higher-volatility markets turned a losing basket into a
+     * roughly break-even one, and the operator needs a way to pin that universe instead
+     * of letting the liquidity score re-rank it back into tight-spread majors.
+     */
+    MARKET_ALLOWLIST: symbolListFromEnv,
     MAX_CANDIDATE_MARKETS: intFromEnv(1, 50).default(3),
     MAX_ACTIVE_MARKET: intFromEnv(1, 10).default(1),
     /** Defaulted by us; the brief left these blank. */

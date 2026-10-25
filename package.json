@@ -28,7 +28,8 @@
     "fetch-docs": "node tools/fetch-arcus-docs.mjs",
     "merge-openapi": "python3 tools/merge-openapi.py",
     "smoke": "node dist/index.js dry-run --ticks 2",
-    "backtest": "tsx tools/backtest.ts"
+    "backtest": "tsx tools/backtest.ts",
+    "select-markets": "tsx tools/select-markets.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",

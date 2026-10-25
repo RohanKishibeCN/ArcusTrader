@@ -325,3 +325,20 @@ describe('strategy mode presets', () => {
     expect(() => loadConfig({ TP1_CLOSE_PCT: '100.1' })).toThrow(ConfigError);
   });
 });
+
+describe('MARKET_ALLOWLIST', () => {
+  it('defaults to an empty list, meaning no restriction', () => {
+    // An empty allowlist must NOT be an allow-nothing list.
+    expect(loadConfig({}).raw.MARKET_ALLOWLIST).toEqual([]);
+  });
+
+  it('normalises case and whitespace', () => {
+    const config = loadConfig({ MARKET_ALLOWLIST: ' near-usd , Sui-USD ,zec-usd ' });
+    expect(config.raw.MARKET_ALLOWLIST).toEqual(['NEAR-USD', 'SUI-USD', 'ZEC-USD']);
+  });
+
+  it('treats a blank value as no restriction', () => {
+    expect(loadConfig({ MARKET_ALLOWLIST: '   ' }).raw.MARKET_ALLOWLIST).toEqual([]);
+    expect(loadConfig({ MARKET_ALLOWLIST: ',,' }).raw.MARKET_ALLOWLIST).toEqual([]);
+  });
+});

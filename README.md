@@ -294,6 +294,51 @@ bindings rejected by both drivers) and logs which driver it selected.
 
 ---
 
+## Market selection is the biggest lever found so far
+
+The same `swing` strategy, same account (369), same window (3 months) — only the market
+basket changes:
+
+| Basket | Trades | Net PnL | PF | **PnL / volume** |
+| --- | --- | --- | --- | --- |
+| Majors: BTC/ETH/SOL/SPY/NVDA/QQQ | 130 | **−29.34** | 0.54 | **−12.4 bps** |
+| Rule-generated wide-spread (ENA/ZEC/USELESS/PUMP/NEAR/LIT) | 89 | **−4.94** | 0.91 | −7.0 bps |
+| Hand-picked wide-spread (SOL/ZEC/NEAR/ENA/SUI/FARTCOIN) | 117 | **+2.41** | 1.04 | +2.2 bps |
+
+Live spreads explain why this lever exists: BTC quotes at **0.01 bps**, SOL at ~0.5–1.8,
+while ZEC/NEAR/ENA sit at **2.2–5.0**. Because entries are post-only (ALO), a wider spread
+is *earned* on entry rather than paid, so the same signal has more room in the wider
+markets.
+
+### Read this before believing the +2.41
+
+The ordering above is encouraging but **it is not evidence of an edge**:
+
+- The **rule-generated list did not reproduce the positive result** — it came in at −4.94.
+  The +2.41 came from a list that was assembled after seeing per-market outcomes, so it is
+  partly selection bias, not a discovered effect.
+- **89–130 trades per basket.** At that sample size the difference between PF 0.91 and
+  1.04 is well inside noise.
+- The spread between baskets (≈14 bps) is **larger than any basket's own edge**, which is
+  the classic signature of "not enough data", not of a working strategy.
+
+What the data does support: **market selection moves PnL/volume by ~10–15 bps, which is
+more than any parameter tried so far.** What it does not support: that any of these
+baskets is profitable.
+
+### Reproducing the selection
+
+```bash
+pnpm select-markets --top 8          # measures spread, banded depth, 24h volume
+# prints a ready-to-paste MARKET_ALLOWLIST
+```
+
+`MARKET_ALLOWLIST` pins the universe so the liquidity score cannot re-rank it back into
+tight-spread majors. Empty means no restriction. The tool measures and ranks; it does not
+choose — **backtest the pinned set on a period you have not looked at before trusting it.**
+
+---
+
 ## Two strategy modes: `swing` and `scalp`
 
 `STRATEGY_MODE` selects one of two presets. Same entry logic, different clocks and exit
