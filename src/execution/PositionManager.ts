@@ -106,15 +106,14 @@ export interface PositionManagerOptions {
   readonly trailEmaPeriod: number;
   /** Structure timeframe, used for the trailing EMA series. */
   readonly structureTimeframe: string;
-  /** ATR multiple for the initial emergency stop check. */
-  readonly emergencyBoundBps: Decimal;
+  /** Buffer placed beyond the trailing EMA, in bps of price. */
+  readonly trailBufferBps: Decimal;
+  /** Favourable move in R required before the trailing stop may engage. */
+  readonly trailActivationR: Decimal;
   /** Supplies closed structure candles for the trailing EMA. */
   readonly getStructureCandles: (symbol: string) => readonly Candle[];
   readonly now?: () => number;
 }
-
-/** Minimum favourable move before a trailing stop is allowed to move at all. */
-const TRAIL_ACTIVATION_R = dec('0.5');
 
 export class PositionManager {
   private readonly options: PositionManagerOptions;
@@ -612,7 +611,8 @@ export class PositionManager {
     const risk = plan.entryPrice.minus(plan.initialStop).abs();
     if (!risk.greaterThan(0)) return undefined;
     const favourableMove = direction === 'long' ? volume.minus(plan.entryPrice) : plan.entryPrice.minus(volume);
-    if (favourableMove.lessThan(risk.times(TRAIL_ACTIVATION_R))) {
+    const activation = risk.times(this.options.trailActivationR);
+    if (favourableMove.lessThan(activation)) {
       return undefined; // not enough progress to justify trailing yet
     }
 
@@ -621,7 +621,7 @@ export class PositionManager {
 
     // The candidate level is the EMA, pulled slightly beyond it so normal retests do
     // not stop us out, and snapped to the venue grid.
-    const buffer = ema.times(this.options.emergencyBoundBps).div(10_000);
+    const buffer = ema.times(this.options.trailBufferBps).div(10_000);
     const rawCandidate = direction === 'long' ? ema.minus(buffer) : ema.plus(buffer);
     const candidate = floorToTick(rawCandidate, dec(market.tickSize));
 

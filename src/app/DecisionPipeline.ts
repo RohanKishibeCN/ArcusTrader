@@ -82,6 +82,8 @@ export interface DecisionPipelineOptions {
   /** Fraction of the target distance treated as realistically projectable. */
   readonly projectableFraction: Decimal;
   readonly maxDataAgeMs: number;
+  /** Funding payment interval, in hours, used by the cost model. */
+  readonly fundingIntervalHours: Decimal;
   /** Fee rates resolved from the tier table (or a documented fallback). */
   readonly feeRates: { makerFeeBps: Decimal; takerFeeBps: Decimal; source: 'table' | 'fallback'; note?: string };
 }
@@ -170,7 +172,7 @@ export class DecisionPipeline {
             ratePerInterval: snapshot.fundingRate,
             hoursToNextFunding: snapshot.hoursToNextFunding,
             expectedHoldHours: snapshot.expectedHoldHours,
-            intervalHours: new Decimal(1),
+            intervalHours: this.options.fundingIntervalHours,
           }
         : undefined;
 

@@ -582,7 +582,7 @@ One field appears live that the merged OpenAPI fragments do not describe:
 
 ### 9.13 Verified with a WHITELISTED account (2026-10-25)
 
-The account `0x2caafa…5b9d` (redacted) is whitelisted, which finally
+A whitelisted account (address redacted) was used, which finally
 allowed the account-scoped half of the API to be exercised against real data. Three wire
 shapes differ from the documentation and were fixed:
 
@@ -622,7 +622,7 @@ hardcoded 2.25 bps taker would now understate the real cost by half.
 `GET /v1/apiKeys?address=…` returns the key **fingerprint/public half**:
 
 ```json
-{"apiKeys":[{"apiKey":"168c72ee…","address":"0x2caa…","accountIndex":0,
+{"apiKeys":[{"apiKey":"<registered-public-key>","address":"0x…","accountIndex":0,
              "allSubaccounts":false,"apiWalletName":"ArcusTrader","status":"ACTIVE",
              "validUntil":1808405632495,"createdAt":1792853635870}]}
 ```
@@ -631,8 +631,8 @@ Distinguishing a public key from a signing seed is possible without trying to tr
 
 | Request | Result | Meaning |
 | --- | --- | --- |
-| `X-API-Key: 168c72ee…`, signature made from it as a seed | `401 invalid order signature` | the gateway **recognises** the key; the signature does not verify |
-| `X-API-Key: <derived from 168c72ee…>`, signature made from it | `401 Invalid API key` | the derived key was never registered |
+| `X-API-Key: <registered public key>`, signature made from it as a seed | `401 invalid order signature` | the gateway **recognises** the key; the signature does not verify |
+| `X-API-Key: <key derived from that value>`, signature made from it | `401 Invalid API key` | the derived key was never registered |
 
 So the supplied value is the public half. No request can be signed with it. The **API
 Signing Key** — the Ed25519 seed shown once at creation — is what `ARCUS_API_SIGNING_KEY`

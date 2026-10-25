@@ -249,7 +249,8 @@ function makeManager(options?: {
     tp1ClosePct: dec(options?.tp1ClosePct ?? '50'),
     trailEmaPeriod: options?.trailEmaPeriod ?? 9,
     structureTimeframe: '1h',
-    emergencyBoundBps: dec('5'),
+    trailBufferBps: dec('5'),
+    trailActivationR: dec('0.5'),
     getStructureCandles: () => structureCandles(options?.candlesLast ?? 105000),
   });
   return { manager, spy, osm };
@@ -759,7 +760,8 @@ describe('trailing stop invariants', () => {
       tp1ClosePct: dec('50'),
       trailEmaPeriod: 50,
       structureTimeframe: '1h',
-      emergencyBoundBps: dec('5'),
+      trailBufferBps: dec('5'),
+    trailActivationR: dec('0.5'),
       // Only 5 bars, far fewer than the 50-period EMA needs.
       getStructureCandles: () => structureCandles(105000, 5),
     });
@@ -843,7 +845,8 @@ describe('emergency exit', () => {
       tp1ClosePct: dec('50'),
       trailEmaPeriod: 9,
       structureTimeframe: '1h',
-      emergencyBoundBps: dec('5'),
+      trailBufferBps: dec('5'),
+    trailActivationR: dec('0.5'),
       getStructureCandles: () => structureCandles(105000),
     });
     manager.registerPlan({ market: market(), position: position(), proposal: PROPOSAL, tp1RMultiple: dec('2'), tp2RMultiple: dec('3') });

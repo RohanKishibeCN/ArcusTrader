@@ -107,7 +107,8 @@ export class BootstrapError extends Error {
   }
 }
 
-function strategyConfigFrom(config: Config): StrategyConfig {
+/** Exported so a test can assert that config values actually reach the strategy. */
+export function strategyConfigFrom(config: Config): StrategyConfig {
   const raw = config.raw;
   return {
     emaFastPeriod: raw.EMA_FAST,
@@ -122,9 +123,12 @@ function strategyConfigFrom(config: Config): StrategyConfig {
     tp1RMultiple: dec(raw.TP1_R_MULTIPLE),
     tp1ClosePct: dec(raw.TP1_CLOSE_PCT),
     tp2RMultiple: dec(raw.TP2_R_MULTIPLE),
-    structureLookback: Math.max(20, raw.MIN_HISTORY_BARS),
-    swingLeftBars: 2,
-    swingRightBars: 2,
+    // A zero means "derive from history", preserving the original behaviour while
+    // letting an operator pin an explicit window.
+    structureLookback:
+      raw.STRUCTURE_LOOKBACK_BARS > 0 ? raw.STRUCTURE_LOOKBACK_BARS : Math.max(20, raw.MIN_HISTORY_BARS),
+    swingLeftBars: raw.SWING_LEFT_BARS,
+    swingRightBars: raw.SWING_RIGHT_BARS,
   };
 }
 
@@ -138,7 +142,8 @@ function costConfigFrom(config: Config): CostModelConfig {
   };
 }
 
-function riskLimitsFrom(config: Config): RiskLimits {
+/** Exported so a test can assert that config values actually reach the RiskEngine. */
+export function riskLimitsFrom(config: Config): RiskLimits {
   const raw = config.raw;
   return {
     riskPerTradeBps: dec(raw.RISK_PER_TRADE_BPS),
@@ -150,7 +155,7 @@ function riskLimitsFrom(config: Config): RiskLimits {
     maxConsecutiveLosses: raw.MAX_CONSECUTIVE_LOSSES,
     minFreeCollateralUsd: dec(raw.MIN_FREE_COLLATERAL_USD),
     maxOrderNotionalPct: dec(raw.MAX_ORDER_NOTIONAL_PCT),
-    minNotional: dec('10'),
+    minNotional: dec(raw.MIN_ORDER_NOTIONAL_USD),
     minOrderSize: undefined,
   };
 }
@@ -323,6 +328,12 @@ export function bootstrap(options: BootstrapOptions): AppContext {
     baseUrl: config.raw.ARCUS_REST_URL,
     logger,
     weightBudget,
+    timeoutMs: config.raw.HTTP_TIMEOUT_MS,
+    circuitBreakerOptions: {
+      threshold: config.raw.CIRCUIT_BREAKER_THRESHOLD,
+      cooldownMs: config.raw.CIRCUIT_BREAKER_COOLDOWN_MS,
+      maxCooldownMs: config.raw.CIRCUIT_BREAKER_MAX_COOLDOWN_MS,
+    },
     ...(signer ? { signer } : {}),
   });
   const ws = new ArcusWsClient({ url: config.raw.ARCUS_WS_URL, logger });
@@ -332,6 +343,7 @@ export function bootstrap(options: BootstrapOptions): AppContext {
     logger,
     maxDataAgeMs: config.raw.MAX_DATA_AGE_MS,
     maxMetadataAgeMs: config.raw.MAX_MARKET_METADATA_AGE_MS,
+    depthBandBps: config.raw.DEPTH_BAND_BPS,
   });
 
   /* ---- risk controls -------------------------------------------- */
@@ -342,6 +354,7 @@ export function bootstrap(options: BootstrapOptions): AppContext {
   const poolGuard = new TradingPoolGuard({
     minOrderRemaining: config.raw.MIN_ORDER_POOL_REMAINING,
     requirePoolReading: config.raw.REQUIRE_ORDER_POOL_READ,
+    maxAgeMs: config.raw.POOL_STATE_MAX_AGE_MS,
   });
 
   const executor = new Executor({
@@ -351,6 +364,8 @@ export function bootstrap(options: BootstrapOptions): AppContext {
     accountIndex,
     orderStateMachine,
     goodTilDays: config.raw.ORDER_GOOD_TIL_DAYS,
+    emergencyBoundBps: dec(config.raw.EMERGENCY_BOUND_BPS),
+    stopTriggerOffsetBps: dec(config.raw.STOP_TRIGGER_OFFSET_BPS),
   });
 
   /**
@@ -366,7 +381,8 @@ export function bootstrap(options: BootstrapOptions): AppContext {
     tp1ClosePct: dec(config.raw.TP1_CLOSE_PCT),
     trailEmaPeriod: config.raw.TRAIL_EMA_PERIOD,
     structureTimeframe: config.raw.STRUCTURE_TIMEFRAME,
-    emergencyBoundBps: dec(config.raw.STOP_TRIGGER_OFFSET_BPS),
+    trailBufferBps: dec(config.raw.TRAIL_STOP_BUFFER_BPS),
+    trailActivationR: dec(config.raw.TRAIL_ACTIVATION_R),
     getStructureCandles: (symbol) => markets.getCandlesClosed(symbol, config.raw.STRUCTURE_TIMEFRAME),
     now: () => Date.now(),
   });
@@ -378,6 +394,9 @@ export function bootstrap(options: BootstrapOptions): AppContext {
     ...(config.secrets.larkAppSecret ? { appSecret: config.secrets.larkAppSecret } : {}),
     ...(config.raw.LARK_CHAT_ID ? { chatId: config.raw.LARK_CHAT_ID } : {}),
     logger,
+    maxAttempts: config.raw.LARK_MAX_ATTEMPTS,
+    baseBackoffMs: config.raw.LARK_BASE_BACKOFF_MS,
+    requestTimeoutMs: config.raw.LARK_REQUEST_TIMEOUT_MS,
   });
 
   /**
@@ -437,8 +456,9 @@ export function bootstrap(options: BootstrapOptions): AppContext {
     strategyConfig,
     costConfig,
     riskEngine,
-    projectableFraction: dec('0.6'),
+    projectableFraction: dec(config.raw.PROJECTABLE_FRACTION),
     maxDataAgeMs: config.raw.MAX_DATA_AGE_MS,
+    fundingIntervalHours: dec(config.raw.FUNDING_INTERVAL_HOURS),
     feeRates: {
       makerFeeBps: costConfig.makerFeeBps,
       takerFeeBps: costConfig.takerFeeBps,

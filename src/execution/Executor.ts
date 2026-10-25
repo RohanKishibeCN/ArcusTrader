@@ -58,8 +58,14 @@ export interface ExecutorOptions {
   readonly orderStateMachine: OrderStateMachine;
   /** Good-til-time horizon for resting orders, in days. Must be >= 31. */
   readonly goodTilDays: number;
-  /** Max value accepted as `price` on an emergency market/IOC order, in bps from mark. */
+  /**
+   * Protective bound for an EMERGENCY market/IOC exit, in bps from the reference price.
+   * Deliberately separate from `stopTriggerOffsetBps`: an emergency flatten must be able
+   * to cross a wider spread than a resting stop's triggered leg.
+   */
   readonly emergencyBoundBps?: Decimal;
+  /** Protective bound around a STOP trigger's triggered leg, in bps. */
+  readonly stopTriggerOffsetBps?: Decimal;
   /** Depth to walk when pricing an emergency exit. */
   readonly now?: () => number;
   /** Client id prefix, so ids are greppable in the venue order history. */
@@ -81,6 +87,7 @@ export class Executor {
   private readonly osm: OrderStateMachine;
   private readonly goodTilDays: number;
   private readonly emergencyBoundBps: Decimal;
+  private readonly stopTriggerOffsetBps: Decimal;
   private readonly now: () => number;
   private readonly clientIdPrefix: string;
 
@@ -101,6 +108,7 @@ export class Executor {
     this.osm = options.orderStateMachine;
     this.goodTilDays = options.goodTilDays;
     this.emergencyBoundBps = options.emergencyBoundBps ?? dec('50');
+    this.stopTriggerOffsetBps = options.stopTriggerOffsetBps ?? dec('5');
     this.now = options.now ?? (() => Date.now());
     this.clientIdPrefix = options.clientIdPrefix ?? 'at';
   }
@@ -366,7 +374,7 @@ export class Executor {
    * trigger by configured bps.
    */
   private boundForStop(direction: 'long' | 'short', stopPrice: Decimal, market: MarketInfo): Decimal {
-    const offset = stopPrice.times(this.emergencyBoundBps).div(10_000);
+    const offset = stopPrice.times(this.stopTriggerOffsetBps).div(10_000);
     const raw = direction === 'long' ? stopPrice.minus(offset) : stopPrice.plus(offset);
     // Snap so the bound is representable on the venue grid.
     const snapped = floorToTick(raw, dec(market.tickSize));

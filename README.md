@@ -48,7 +48,7 @@ system, and emphatically **not** a volume-generation system.
 | Strategy | Implemented and unit-tested; exercised against live mainnet data in `dry-run` |
 | RiskEngine | Implemented; every limit has a positive and a negative test |
 | Lark reporting | **Implemented and unit-tested** (94 tests) with an in-repo outbox; no live message sent |
-| Test suite | **505 tests passing** across 10 files |
+| Test suite | **522 tests passing** across 11 files |
 | Live trading | **Never enabled.** Not attempted. |
 
 ### Two hard blockers, both environmental
@@ -248,7 +248,7 @@ pnpm.
 pnpm install
 cp .env.example .env          # optional for dry-run
 pnpm typecheck                # tsc, strict
-pnpm test                     # 505 tests
+pnpm test                     # 522 tests
 pnpm dry-run --once           # one tick against live mainnet public data
 pnpm preflight                # full self-test, exits non-zero on a real problem
 ```
@@ -314,6 +314,32 @@ TARGET_VOLUME_USD=0       ALLOW_AUTO_WITHDRAW=false
 **Strategy** — all timeframes configurable; `TRIGGER_TIMEFRAME` **excludes `1m` at
 the schema level**, so a 1-minute primary trigger is not merely discouraged but
 unrepresentable.
+
+### Everything tunable lives in config — enforced by tests
+
+There are **108 schema keys**, all documented in [`.env.example`](.env.example). No
+behavioural constant is hidden in the code: swing window, structure lookback, projectable
+fraction, funding interval, expected holding time, trailing activation and buffer, stop
+and emergency bounds, the minimum order notional, the maintenance-margin fallback, the
+depth band, all five liquidity-score weights and their saturation multiples, breadth
+quote and orderbook fetch limits, tick/candle/report cadences, the health stall
+threshold, HTTP timeouts, circuit-breaker thresholds and cooldowns, pool-state TTL, and
+the Lark retry policy are all settings.
+
+Two invariants keep it that way, and both are tests rather than conventions:
+
+1. **No dead keys** — `tests/unit/config.test.ts` scans the schema and asserts every key
+   is read somewhere outside `config.ts`. A declared-but-unread key is worse than a
+   missing one: it looks configurable and silently is not. This caught three real
+   offenders while the change was being made (`MIN_RECENT_VOLUME_USD`,
+   `STOP_TRIGGER_OFFSET_BPS`, and a validated-only `MAX_ACTIVE_MARKET`, which is now
+   explicitly allowlisted with its reason).
+2. **No undocumented keys** — the same file asserts `.env.example` and the schema agree
+   in both directions, so a new setting cannot be added without documenting it.
+
+Changing a value demonstrably reaches the code: `TICK_INTERVAL_MS=1000` changes the
+observed loop interval, `SWING_LEFT_BARS` changes the strategy's swing window, and
+`MIN_ORDER_NOTIONAL_USD` changes the RiskEngine's floor.
 
 Startup refuses to run when configuration is unsafe or inconsistent, and reports
 *every* problem at once. The checks that will stop you:
@@ -832,8 +858,8 @@ demonstrated edge after costs.
 ## Deployment readiness
 
 State as of 2026-10-25, tested against the live account
-`0x2caafa…5b9d` (partially redacted — this repository is public; the address is
-public on-chain data, but there is no reason to bundle it with the source).
+an account address (redacted — this repository is public; the address is public
+on-chain data, but there is no reason to bundle it with the source).
 
 | Check | Result |
 | --- | --- |
@@ -851,8 +877,9 @@ public on-chain data, but there is no reason to bundle it with the source).
 
 The value supplied is the **public API key**, not the private signing key:
 
-- `GET /v1/apiKeys?address=…` lists `168c72ee…` as the registered `apiKey` (the public half).
-- Sending `X-API-Key: 168c72ee…` is recognised by the gateway (it returns
+- `GET /v1/apiKeys?address=…` lists the supplied value as the registered `apiKey`
+  (the public half).
+- Sending that value as `X-API-Key` is recognised by the gateway (it returns
   `invalid order signature`, not `Invalid API key`).
 - Deriving a public key *from* that value and sending it instead returns `Invalid API key`,
   because the derived key was never registered.
@@ -899,7 +926,7 @@ Two consequences:
 ## Testing
 
 ```bash
-pnpm test             # 505 tests, 10 files
+pnpm test             # 522 tests, 11 files
 pnpm test:safety      # the fail-closed suite alone
 pnpm test:unit        # unit suite
 pnpm typecheck        # tsc --noEmit, strict + noUncheckedIndexedAccess
@@ -916,9 +943,10 @@ pnpm typecheck        # tsc --noEmit, strict + noUncheckedIndexedAccess
  ✓ tests/unit/runtime-loop.test.ts  ( 7 tests)   ← pins the loop actually looping
  ✓ tests/unit/position-manager.test.ts (32 tests) ← pins the exit plan and its invariants
  ✓ tests/unit/health.test.ts        (16 tests)   ← pins the 200/503 policy
+ ✓ tests/unit/config.test.ts        (17 tests)   ← pins no-dead-keys + wiring
 
- Test Files  10 passed (10)
-      Tests  505 passed (505)
+ Test Files  11 passed (11)
+      Tests  522 passed (522)
 ```
 
 Coverage against the brief's required test list:
@@ -948,6 +976,7 @@ Coverage against the brief's required test list:
 | Live wire shapes / whitelist / WS frames | `arcus-client.test.ts`, `arcus-ws.test.ts` |
 | 止盈 (TP1/TP2) / 移动止损 / reduce-only 退出 | `position-manager.test.ts` |
 | 健康检查与故障可见性 | `health.test.ts` |
+| 配置集中化 / 无死配置 | `config.test.ts` |
 
 The safety suite is written so the **failing** case is the dangerous one: if a test
 there starts failing, the system is unsafe, not merely incorrect.

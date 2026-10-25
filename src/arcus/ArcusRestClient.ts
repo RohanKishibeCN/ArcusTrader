@@ -501,6 +501,12 @@ export interface ArcusRestClientOptions {
   readonly signer?: ArcusSigner;
   readonly weightBudget?: WeightBudget;
   readonly circuitBreaker?: ThrottleCircuitBreaker;
+  /** Used to construct the breaker when one is not supplied directly. */
+  readonly circuitBreakerOptions?: {
+    readonly threshold?: number;
+    readonly cooldownMs?: number;
+    readonly maxCooldownMs?: number;
+  };
   /** Per-request timeout. Default 10s. */
   readonly timeoutMs?: number;
   /** Injectable fetch for tests. */
@@ -538,7 +544,8 @@ export class ArcusRestClient {
     this.logger = options.logger;
     this.signer = options.signer;
     this.weightBudget = options.weightBudget ?? new WeightBudget();
-    this.circuitBreaker = options.circuitBreaker ?? new ThrottleCircuitBreaker();
+    this.circuitBreaker =
+      options.circuitBreaker ?? new ThrottleCircuitBreaker(options.circuitBreakerOptions ?? {});
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }

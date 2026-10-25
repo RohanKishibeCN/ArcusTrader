@@ -86,6 +86,8 @@ export interface MarketProviderOptions {
   readonly maxDataAgeMs: number;
   /** Max age for static market metadata. */
   readonly maxMetadataAgeMs: number;
+  /** Band around mid used to measure usable book depth, in bps. */
+  readonly depthBandBps?: number;
   /** Injectable clock. */
   readonly now?: () => number;
 }
@@ -95,6 +97,7 @@ export class MarketProvider {
   private readonly logger: Logger;
   private readonly maxDataAgeMs: number;
   private readonly maxMetadataAgeMs: number;
+  private readonly depthBandBps: number;
   private readonly now: () => number;
 
   private markets = new Map<number, MarketInfo>();
@@ -116,6 +119,7 @@ export class MarketProvider {
     this.logger = options.logger;
     this.maxDataAgeMs = options.maxDataAgeMs;
     this.maxMetadataAgeMs = options.maxMetadataAgeMs;
+    this.depthBandBps = options.depthBandBps ?? 25;
     this.now = options.now ?? (() => Date.now());
   }
 
@@ -361,7 +365,7 @@ export class MarketProvider {
    * as `price * size` and reported per side, because a market with deep bids and
    * a thin ask is not "deep" for a buyer.
    */
-  depthUsdWithinBand(book: OrderbookSnapshot, bandBps = 25): { bidUsd: Decimal; askUsd: Decimal } {
+  depthUsdWithinBand(book: OrderbookSnapshot, bandBps = this.depthBandBps): { bidUsd: Decimal; askUsd: Decimal } {
     // L2 levels are `[price, size]` tuples, ordered best-first on each side.
     const bestBid = book.bids[0]?.[0];
     const bestAsk = book.asks[0]?.[0];

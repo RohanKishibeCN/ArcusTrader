@@ -71,19 +71,6 @@ export interface RuntimeOptions {
 }
 
 export class Runtime {
-  /**
-   * How many markets to quote each tick purely to inform candidate ranking.
-   * Bounded so read traffic cannot grow with the size of the market list.
-   */
-  static readonly MAX_BREADTH_QUOTES = 12;
-
-  /**
-   * How many `GET /v1/l2OrderBook` calls one ranking pass may issue.
-   *
-   * Weight 2 each, so 24 weight per pass against a 1,500/min bucket — affordable
-   * once per ranking cadence, and bounded regardless of how many markets list.
-   */
-  static readonly MAX_ORDERBOOK_FETCHES = 12;
 
   private readonly context: AppContext;
   private readonly logger: Logger;
@@ -153,8 +140,8 @@ export class Runtime {
   constructor(context: AppContext, options: RuntimeOptions = {}) {
     this.context = context;
     this.logger = context.logger;
-    this.tickIntervalMs = options.tickIntervalMs ?? 5_000;
-    this.candleRefreshMs = options.candleRefreshMs ?? 60_000;
+    this.tickIntervalMs = options.tickIntervalMs ?? context.config.raw.TICK_INTERVAL_MS;
+    this.candleRefreshMs = options.candleRefreshMs ?? context.config.raw.CANDLE_REFRESH_MS;
     this.once = options.once ?? false;
     this.maxTicks = options.maxTicks ?? Number.POSITIVE_INFINITY;
   }
@@ -190,7 +177,10 @@ export class Runtime {
         port: this.context.config.raw.HEALTHCHECK_PORT,
         logger,
         snapshot: () => this.healthSnapshot(),
-        stallThresholdMs: Math.max(60_000, this.tickIntervalMs * 12),
+        stallThresholdMs:
+          this.context.config.raw.HEALTH_STALL_THRESHOLD_MS > 0
+            ? this.context.config.raw.HEALTH_STALL_THRESHOLD_MS
+            : Math.max(60_000, this.tickIntervalMs * 12),
       });
       await this.healthServer.start();
     }
@@ -502,7 +492,7 @@ export class Runtime {
         const bv = b.volume24hNotional ? dec(b.volume24hNotional) : dec('0');
         return bv.comparedTo(av);
       })
-      .slice(0, Runtime.MAX_BREADTH_QUOTES);
+      .slice(0, this.context.config.raw.MAX_BREADTH_QUOTES);
   }
 
   private async refreshCandles(nowMs: number): Promise<void> {
@@ -587,9 +577,13 @@ export class Runtime {
       if (!isRwa && !raw.ALLOW_CRYPTO) continue;
       if (isRwa && market.isOutsideRth && !raw.ALLOW_RWA_OFF_HOURS) continue;
 
-      // 24h notional gate, straight from metadata.
+      // Volume gate: the effective floor is the STRICTER of the two configured
+      // thresholds, so raising either one tightens the candidate pool. They are kept
+      // separate because `MIN_24H_NOTIONAL_USD` describes the tradable universe while
+      // `MIN_RECENT_VOLUME_USD` describes what is worth ranking.
       const volume24h = market.volume24hNotional ? dec(market.volume24hNotional) : dec('0');
-      if (volume24h.lessThan(dec(raw.MIN_24H_NOTIONAL_USD))) continue;
+      const volumeFloor = Decimal.max(dec(raw.MIN_24H_NOTIONAL_USD), dec(raw.MIN_RECENT_VOLUME_USD));
+      if (volume24h.lessThan(volumeFloor)) continue;
 
       const quote = this.context.markets.getQuote(market.marketId);
       const spread = quote?.spreadBps;
@@ -602,7 +596,7 @@ export class Runtime {
        * cleared the cheap gates.
        */
       let book = this.context.markets.getOrderbook(market.marketId);
-      if (!book.value && orderbookFetches < Runtime.MAX_ORDERBOOK_FETCHES) {
+      if (!book.value && orderbookFetches < this.context.config.raw.MAX_ORDERBOOK_FETCHES) {
         orderbookFetches += 1;
         const fetched = await this.context.markets.refreshOrderbook(
           market.marketId,
@@ -635,20 +629,32 @@ export class Runtime {
 
       // Component scores, each normalised to [0,1] and documented.
       const spreadScore = clamp01(dec('1').minus(spread.div(dec(raw.MAX_SPREAD_BPS))));
-      const depthScore = clamp01(depthUsd.div(depthFloor.times(10)));
-      const volumeScore = clamp01(volume24h.div(dec(raw.MIN_24H_NOTIONAL_USD).times(20)));
+      // Depth/volume saturate at `floor * multiple`, so a market far above the floor
+      // scores the same as one just above it — the score ranks sufficiency, not size.
+      const depthScore = clamp01(depthUsd.div(depthFloor.times(dec(raw.DEPTH_SCORE_SATURATION_MULTIPLE))));
+      const volumeScore = clamp01(
+        volume24h.div(dec(raw.MIN_24H_NOTIONAL_USD).times(dec(raw.VOLUME_SCORE_SATURATION_MULTIPLE))),
+      );
       const freshnessScore = quote.fresh && book.fresh ? dec('1') : dec('0');
-      const fillQualityScore = quote.spreadBps !== undefined && quote.spreadBps.lessThan(dec(raw.MAX_SPREAD_BPS).div(2))
-        ? dec('1')
-        : dec('0.5');
+      const fillQualityScore =
+        quote.spreadBps !== undefined && quote.spreadBps.lessThan(dec(raw.MAX_SPREAD_BPS).div(2))
+          ? dec('1')
+          : dec(raw.SCORE_FILL_QUALITY_PARTIAL);
 
-      // Weighted sum. Spread and depth dominate because both are execution cost.
+      // Weights are normalised by their sum, so operators can adjust their RELATIVE
+      // size without having to keep the five values summing to exactly 1.
+      const weightTotal = dec(raw.SCORE_WEIGHT_SPREAD)
+        .plus(dec(raw.SCORE_WEIGHT_DEPTH))
+        .plus(dec(raw.SCORE_WEIGHT_VOLUME))
+        .plus(dec(raw.SCORE_WEIGHT_FRESHNESS))
+        .plus(dec(raw.SCORE_WEIGHT_FILL_QUALITY));
       const score = spreadScore
-        .times('0.3')
-        .plus(depthScore.times('0.3'))
-        .plus(volumeScore.times('0.2'))
-        .plus(freshnessScore.times('0.1'))
-        .plus(fillQualityScore.times('0.1'));
+        .times(dec(raw.SCORE_WEIGHT_SPREAD))
+        .plus(depthScore.times(dec(raw.SCORE_WEIGHT_DEPTH)))
+        .plus(volumeScore.times(dec(raw.SCORE_WEIGHT_VOLUME)))
+        .plus(freshnessScore.times(dec(raw.SCORE_WEIGHT_FRESHNESS)))
+        .plus(fillQualityScore.times(dec(raw.SCORE_WEIGHT_FILL_QUALITY)))
+        .div(weightTotal);
 
       scored.push({
         market,
@@ -1163,7 +1169,7 @@ export class Runtime {
               ),
             }
           : {}),
-        expectedHoldHours: new Decimal(4),
+        expectedHoldHours: dec(raw.EXPECTED_HOLD_HOURS),
       },
       buildRiskState: (proposal) => this.buildRiskState(proposal, market),
     });
@@ -1603,7 +1609,7 @@ export class Runtime {
   private async maybeSendDailyReport(nowMs: number): Promise<void> {
     if (!this.context.config.raw.REPORT_ENABLED) return;
     // Check at most once a minute; the send itself is idempotent.
-    if (nowMs - this.lastReportCheckMs < 60_000) return;
+    if (nowMs - this.lastReportCheckMs < this.context.config.raw.REPORT_CHECK_INTERVAL_MS) return;
     this.lastReportCheckMs = nowMs;
 
     const raw = this.context.config.raw;
@@ -1678,7 +1684,9 @@ export class Runtime {
     const maintenanceMargin = positions.reduce((acc, p) => {
       const market = this.context.markets.getMarketById(p.marketId);
       const mmf = market ? this.context.markets.maintenanceMarginFraction(market) : undefined;
-      return acc.plus(dec(p.size).abs().times(dec(p.markPx)).times(mmf ?? dec('0.005')));
+      return acc.plus(
+        dec(p.size).abs().times(dec(p.markPx)).times(mmf ?? dec(raw.DEFAULT_MAINTENANCE_MARGIN_FRACTION)),
+      );
     }, dec('0'));
 
     // Worst case: every open position stopped out at its reconstructed stop. The

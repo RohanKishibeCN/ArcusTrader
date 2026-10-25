@@ -164,6 +164,31 @@ export const configSchema = z
     /** Bars a resting entry order may live before cancellation. */
     ENTRY_ORDER_TTL_BARS: intFromEnv(1, 100).default(4),
 
+    /* ---- structure & target geometry ------------------------------- */
+    /** Swing-confirmation window on the structure timeframe (bars each side). */
+    SWING_LEFT_BARS: intFromEnv(1, 20).default(2),
+    SWING_RIGHT_BARS: intFromEnv(1, 20).default(2),
+    /** Bars scanned for swing structure / AVWAP anchoring. 0 = derive from MIN_HISTORY_BARS. */
+    STRUCTURE_LOOKBACK_BARS: intFromEnv(0, 5000).default(0),
+    /**
+     * Fraction of the TP1 distance treated as realistically reachable. This is the
+     * `expectedMove` the cost gate compares against total estimated cost; lowering it
+     * makes the gate stricter.
+     */
+    PROJECTABLE_FRACTION: decimalFromEnv.default('0.6'),
+    /** Assumed holding time, used to estimate the funding cost of a trade. */
+    EXPECTED_HOLD_HOURS: decimalFromEnv.default('4'),
+    /** Funding payment interval, in hours. Arcus is hourly. */
+    FUNDING_INTERVAL_HOURS: decimalFromEnv.default('1'),
+
+    /* ---- trailing exit -------------------------------------------- */
+    /** Favourable move in R before the trailing stop may engage. */
+    TRAIL_ACTIVATION_R: decimalFromEnv.default('0.5'),
+    /** Buffer placed beyond the trailing EMA, in bps of price. */
+    TRAIL_STOP_BUFFER_BPS: decimalFromEnv.default('5'),
+    /** Protective bound placed around a stop trigger, in bps of the trigger price. */
+    EMERGENCY_BOUND_BPS: decimalFromEnv.default('50'),
+
     /* ---- market selection ------------------------------------------ */
     PREFER_RWA: boolFromEnv.default(true),
     ALLOW_CRYPTO: boolFromEnv.default(true),
@@ -203,6 +228,13 @@ export const configSchema = z
     /* ---- order execution ------------------------------------------- */
     /** Hard cap on a single order's notional, as a fraction of equity. */
     MAX_ORDER_NOTIONAL_PCT: decimalFromEnv.default('30'),
+    /** Floor on order notional. The market's own `minOrderNotional` also applies. */
+    MIN_ORDER_NOTIONAL_USD: decimalFromEnv.default('10'),
+    /**
+     * Maintenance-margin fraction used when a market payload omits it. Only affects
+     * the reported liquidation distance and withdrawable balance, never sizing.
+     */
+    DEFAULT_MAINTENANCE_MARGIN_FRACTION: decimalFromEnv.default('0.005'),
     /** Stop-order trigger offset beyond the stop price, in bps of price. */
     STOP_TRIGGER_OFFSET_BPS: decimalFromEnv.default('5'),
     /** Good-til-time horizon for resting orders, in days (must exceed 30). */
@@ -211,6 +243,29 @@ export const configSchema = z
     RATE_LIMIT_WEIGHT_BUDGET_PER_MIN: intFromEnv(100, 1500).default(900),
     /** Refuse new entries when a per-subaccount pool drops below this. */
     MIN_ORDER_POOL_REMAINING: intFromEnv(0, 10_000).default(50),
+
+    /* ---- liquidity scoring ---------------------------------------- */
+    /** Band around mid used to measure usable book depth. */
+    DEPTH_BAND_BPS: intFromEnv(1, 1000).default(25),
+    /** Depth at `floor * multiple` scores 1.0. */
+    DEPTH_SCORE_SATURATION_MULTIPLE: decimalFromEnv.default('10'),
+    /** 24h notional at `floor * multiple` scores 1.0. */
+    VOLUME_SCORE_SATURATION_MULTIPLE: decimalFromEnv.default('20'),
+    /**
+     * Component weights for `liquidityScore`. They are normalised at runtime, so only
+     * their relative size matters; each must be >= 0 and the sum must be > 0.
+     */
+    SCORE_WEIGHT_SPREAD: decimalFromEnv.default('0.3'),
+    SCORE_WEIGHT_DEPTH: decimalFromEnv.default('0.3'),
+    SCORE_WEIGHT_VOLUME: decimalFromEnv.default('0.2'),
+    SCORE_WEIGHT_FRESHNESS: decimalFromEnv.default('0.1'),
+    SCORE_WEIGHT_FILL_QUALITY: decimalFromEnv.default('0.1'),
+    /** Score for a market whose spread is wider than half the configured ceiling. */
+    SCORE_FILL_QUALITY_PARTIAL: decimalFromEnv.default('0.5'),
+    /** Markets quoted per tick purely to inform ranking. */
+    MAX_BREADTH_QUOTES: intFromEnv(1, 100).default(12),
+    /** Orderbook fetches allowed per ranking pass. */
+    MAX_ORDERBOOK_FETCHES: intFromEnv(1, 100).default(12),
     /**
      * When true (default), an unreadable `GET /v1/rateLimit` blocks new entries.
      * Set false only if the account is not whitelisted for that endpoint (403),
@@ -237,6 +292,29 @@ export const configSchema = z
     /** Fail-closed if the trailing market-metadata refresh is older than this. */
     MAX_MARKET_METADATA_AGE_MS: intFromEnv(1000, 3_600_000).default(300_000),
     HEALTHCHECK_PORT: intFromEnv(0, 65_535).default(0),
+    /** Decision-loop interval. */
+    TICK_INTERVAL_MS: intFromEnv(500, 300_000).default(5_000),
+    /** Candle-history refresh interval. */
+    CANDLE_REFRESH_MS: intFromEnv(10_000, 3_600_000).default(60_000),
+    /** How often the daily-report gate is evaluated. */
+    REPORT_CHECK_INTERVAL_MS: intFromEnv(10_000, 3_600_000).default(60_000),
+    /** Health endpoint stale-loop threshold. 0 = derive from TICK_INTERVAL_MS. */
+    HEALTH_STALL_THRESHOLD_MS: intFromEnv(0, 86_400_000).default(0),
+
+    /* ---- transport resilience ------------------------------------- */
+    /** Per-request HTTP timeout. */
+    HTTP_TIMEOUT_MS: intFromEnv(500, 120_000).default(10_000),
+    /** Consecutive 429s before the client stops issuing that class of request. */
+    CIRCUIT_BREAKER_THRESHOLD: intFromEnv(1, 100).default(3),
+    CIRCUIT_BREAKER_COOLDOWN_MS: intFromEnv(100, 600_000).default(2_000),
+    CIRCUIT_BREAKER_MAX_COOLDOWN_MS: intFromEnv(1_000, 3_600_000).default(60_000),
+    /** How long a per-subaccount pool reading stays trustworthy. */
+    POOL_STATE_MAX_AGE_MS: intFromEnv(1_000, 3_600_000).default(300_000),
+
+    /* ---- Lark transport ------------------------------------------- */
+    LARK_MAX_ATTEMPTS: intFromEnv(1, 10).default(4),
+    LARK_BASE_BACKOFF_MS: intFromEnv(50, 30_000).default(500),
+    LARK_REQUEST_TIMEOUT_MS: intFromEnv(1_000, 120_000).default(10_000),
   })
   /**
    * Unknown keys are STRIPPED, not rejected.
@@ -407,6 +485,47 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (dec(raw.MIN_RECENT_VOLUME_USD) <= 0) {
     issues.push('MIN_RECENT_VOLUME_USD must be > 0.');
   }
+  /* --- new geometry / scoring guards ------------------------------- */
+  {
+    const projectable = Number(raw.PROJECTABLE_FRACTION);
+    if (!(projectable > 0) || projectable > 1) {
+      issues.push('PROJECTABLE_FRACTION must be within (0, 1].');
+    }
+    if (Number(raw.TRAIL_ACTIVATION_R) < 0) {
+      issues.push('TRAIL_ACTIVATION_R must be >= 0.');
+    }
+    if (!(Number(raw.MIN_ORDER_NOTIONAL_USD) > 0)) {
+      issues.push('MIN_ORDER_NOTIONAL_USD must be > 0.');
+    }
+    const mmf = Number(raw.DEFAULT_MAINTENANCE_MARGIN_FRACTION);
+    if (!(mmf > 0) || mmf >= 1) {
+      issues.push('DEFAULT_MAINTENANCE_MARGIN_FRACTION must be within (0, 1).');
+    }
+    if (!(Number(raw.EXPECTED_HOLD_HOURS) > 0)) {
+      issues.push('EXPECTED_HOLD_HOURS must be > 0.');
+    }
+    if (!(Number(raw.FUNDING_INTERVAL_HOURS) > 0)) {
+      issues.push('FUNDING_INTERVAL_HOURS must be > 0.');
+    }
+    const weights = [
+      raw.SCORE_WEIGHT_SPREAD,
+      raw.SCORE_WEIGHT_DEPTH,
+      raw.SCORE_WEIGHT_VOLUME,
+      raw.SCORE_WEIGHT_FRESHNESS,
+      raw.SCORE_WEIGHT_FILL_QUALITY,
+    ].map(Number);
+    if (weights.some((w) => w < 0)) {
+      issues.push('SCORE_WEIGHT_* values must be >= 0.');
+    }
+    if (weights.reduce((a, b) => a + b, 0) <= 0) {
+      // All-zero weights would make every market score 0 and rank arbitrarily.
+      issues.push('SCORE_WEIGHT_* values must not all be zero.');
+    }
+    if (Number(raw.CIRCUIT_BREAKER_MAX_COOLDOWN_MS) < Number(raw.CIRCUIT_BREAKER_COOLDOWN_MS)) {
+      issues.push('CIRCUIT_BREAKER_MAX_COOLDOWN_MS must be >= CIRCUIT_BREAKER_COOLDOWN_MS.');
+    }
+  }
+
   if (raw.MAX_ACTIVE_MARKET !== 1) {
     // Refusing beats ignoring: the runtime holds one active market, so a larger value
     // would be a request the system silently cannot honour.
