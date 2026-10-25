@@ -27,6 +27,8 @@ import { runStartupSequence, type StartupReport } from './bootstrap';
 import type { Fill, MarketInfo, Order, Position } from '../arcus/types';
 import { ArcusHttpError } from '../arcus/ArcusRestClient';
 import { isRwaCategory } from '../arcus/types';
+import { collectAccountOverview, type AccountOverview } from './AccountOverview';
+import type { AffiliateInfo } from '../arcus/types';
 import { dayKey } from '../store/Store';
 import type { DecisionOutcome } from './DecisionPipeline';
 import type { RiskEngineState, TradeProposal } from '../risk/RiskEngine';
@@ -38,6 +40,7 @@ import {
   reportDateInTimezone,
   reportIdempotencyKey,
   type DailyReportInput,
+  type ReportExtras,
 } from '../notifications/DailyReport';
 
 /** Candidate market with its liquidity score. */
@@ -1632,7 +1635,8 @@ export class Runtime {
     const localHour = hourInTimezone(nowMs, raw.REPORT_TIMEZONE);
     if (scheduledHour !== undefined && localHour < scheduledHour) return;
 
-    const input = this.buildReportInput(reportDate, nowMs);
+    const extras = await this.collectReportExtras(address);
+    const input = this.buildReportInput(reportDate, nowMs, extras);
     const card = buildDailyReportCard(input);
     const result = await this.context.larkClient.sendCard(card, { uuid: idempotencyKey.slice(0, 50) });
     if (result.ok) {
@@ -1663,8 +1667,62 @@ export class Runtime {
     }
   }
 
+  /**
+   * Read the wallet-wide figures the daily report shows beyond the active account:
+   * the consolidated subaccount overview and, when a signing key is configured, the
+   * affiliate/referral standing.
+   *
+   * Read-only and called only on the report path (once a day), never per tick: the
+   * overview issues up to `ACCOUNT_OVERVIEW_MAX_INDEX + 1` account reads, which would
+   * be pure waste in the decision loop.
+   *
+   * Failures are swallowed into `undefined` on purpose. A report must still go out if
+   * the affiliate endpoint is 404/503 — losing a Trading section is much better than
+   * losing the whole report.
+   */
+  async collectReportExtras(address: string): Promise<ReportExtras> {
+    const raw = this.context.config.raw;
+    let overview: AccountOverview | undefined;
+    let affiliate: AffiliateInfo | undefined;
+
+    if (raw.REPORT_INCLUDE_ACCOUNT_OVERVIEW) {
+      try {
+        overview = await collectAccountOverview({
+          reader: this.context.rest,
+          address,
+          maxIndex: raw.ACCOUNT_OVERVIEW_MAX_INDEX,
+          logger: this.logger,
+        });
+      } catch (error) {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'account overview unavailable; report omits the subaccount breakdown',
+        );
+      }
+    }
+
+    // No signing key required: verified live 2026-10-25 that this endpoint answers
+    // without auth headers (docs say otherwise — see API_CONTRACTS §9.15). The client
+    // signs when a key exists and degrades to a 401 warning if the venue enforces it.
+    if (raw.REPORT_INCLUDE_AFFILIATE && address !== '') {
+      try {
+        affiliate = await this.context.rest.getAffiliateInfo(address);
+      } catch (error) {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'affiliate info unavailable; report omits referral standing',
+        );
+      }
+    }
+
+    return {
+      ...(overview ? { overview } : {}),
+      ...(affiliate ? { affiliate } : {}),
+    };
+  }
+
   /** Assemble the report input from live state and the store. */
-  buildReportInput(reportDate: string, nowMs: number): DailyReportInput {
+  buildReportInput(reportDate: string, nowMs: number, extras: ReportExtras = {}): DailyReportInput {
     const raw = this.context.config.raw;
     const stats = this.context.decisionPipeline.stats;
     const today = dayKey(nowMs);
@@ -1747,6 +1805,8 @@ export class Runtime {
       cashFlowAdjustedReturnPct,
       fillCount: ledger.fillCount,
       grossVolumeNotional: ledger.grossVolumeNotional,
+      ...(extras.overview ? { accountOverview: extras.overview } : {}),
+      ...(extras.affiliate ? { affiliate: extras.affiliate } : {}),
       makerRatio: this.context.store.makerRatioForDay(today),
       winRate: closedTrades.winRate,
       profitFactor: closedTrades.profitFactor,

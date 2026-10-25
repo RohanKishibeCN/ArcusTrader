@@ -48,7 +48,7 @@ system, and emphatically **not** a volume-generation system.
 | Strategy | Implemented and unit-tested; exercised against live mainnet data in `dry-run` |
 | RiskEngine | Implemented; every limit has a positive and a negative test |
 | Lark reporting | **Implemented and unit-tested** (94 tests) with an in-repo outbox; no live message sent |
-| Test suite | **522 tests passing** across 11 files |
+| Test suite | **542 tests passing** across 12 files |
 | Live trading | **Never enabled.** Not attempted. |
 
 ### Two hard blockers, both environmental
@@ -248,7 +248,7 @@ pnpm.
 pnpm install
 cp .env.example .env          # optional for dry-run
 pnpm typecheck                # tsc, strict
-pnpm test                     # 522 tests
+pnpm test                     # 542 tests
 pnpm dry-run --once           # one tick against live mainnet public data
 pnpm preflight                # full self-test, exits non-zero on a real problem
 ```
@@ -892,6 +892,25 @@ not saved, revoke the key and create a new one, saving the signing half this tim
 Put it in `ARCUS_API_SIGNING_KEY` and nothing else: the system derives the public key from
 it and refuses to start if `ARCUS_API_KEY` disagrees.
 
+### Balance is consolidated, but the two volume figures are not
+
+The daily report sums **equity and deposits** across every subaccount that has activity,
+and computes lifetime ROI from the totals. Volume is deliberately *not* summed the same
+way, because Arcus scopes the two volume numbers differently (verified against the live
+API — see [`docs/API_CONTRACTS.md`](docs/API_CONTRACTS.md) §9.16):
+
+| Figure | Scope | Shown as |
+| --- | --- | --- |
+| Fee-tier volume credit | **per subaccount** | fee tier only, never summed |
+| Referral / 30-day volume | **per wallet** | `30d own volume (all subaccounts)` |
+
+So splitting activity across subaccounts makes fee tiers *slower* to reach while the
+referral metric still counts everything. The report states the scope next to each number
+rather than presenting one ambiguous "volume" figure.
+
+This is reporting only. There is no volume target anywhere in the system: `TARGET_VOLUME_USD`
+must be 0 and a non-zero value fails startup.
+
 ### Sharing a subaccount with manual trading halts the bot
 
 The daily-loss breaker reads **every fill on the account**, including your own manual
@@ -926,7 +945,7 @@ Two consequences:
 ## Testing
 
 ```bash
-pnpm test             # 522 tests, 11 files
+pnpm test             # 542 tests, 12 files
 pnpm test:safety      # the fail-closed suite alone
 pnpm test:unit        # unit suite
 pnpm typecheck        # tsc --noEmit, strict + noUncheckedIndexedAccess
@@ -944,9 +963,10 @@ pnpm typecheck        # tsc --noEmit, strict + noUncheckedIndexedAccess
  ✓ tests/unit/position-manager.test.ts (32 tests) ← pins the exit plan and its invariants
  ✓ tests/unit/health.test.ts        (16 tests)   ← pins the 200/503 policy
  ✓ tests/unit/config.test.ts        (17 tests)   ← pins no-dead-keys + wiring
+ ✓ tests/unit/account-overview.test.ts (15 tests) ← pins volume-scope handling
 
- Test Files  11 passed (11)
-      Tests  522 passed (522)
+ Test Files  12 passed (12)
+      Tests  542 passed (542)
 ```
 
 Coverage against the brief's required test list:

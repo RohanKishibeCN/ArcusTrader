@@ -638,3 +638,63 @@ So the supplied value is the public half. No request can be signed with it. The 
 Signing Key** — the Ed25519 seed shown once at creation — is what `ARCUS_API_SIGNING_KEY`
 must contain, and the system derives the public key from it (refusing to start if
 `ARCUS_API_KEY` disagrees).
+
+### 9.15 `GET /v1/affiliate/info` is NOT authenticated, despite the docs
+
+The reference states the endpoint is signed and scoped to the caller:
+
+> **Signed, and scoped to the caller.** `address` must be the API key's master Ethereum
+> address; reading another wallet's affiliate info is `403`. The Ed25519 request
+> signature is required because `X-API-Key` alone proves nothing.
+
+Verified live on 2026-10-25, none of that holds:
+
+| Request | Result |
+| --- | --- |
+| No auth headers at all | **200** with the full affiliate record |
+| `X-API-Key` + garbage `X-Signature` | **200**, identical body |
+| Unrelated address with no activity | 404 `Affiliate not found` |
+
+Consequences:
+
+- The read works without a signing key, so the client sends a signature only when one is
+  configured (`signed: this.signer !== undefined`) and tolerates a future 401 if the
+  venue starts enforcing the documented rule.
+- Affiliate data — referral code, commission totals, 30-day volume — is publicly readable
+  for any address that has an affiliate record. Treat it as public, not private.
+- **This endpoint does not verify the signing path.** A successful call proves nothing
+  about the key. Only an order endpoint does (see §9.14, where a bad signature returns
+  `invalid order signature`).
+
+### 9.16 Fee-tier and referral volume are scoped DIFFERENTLY
+
+Two volume numbers that look interchangeable are not:
+
+| Figure | Scope | Evidence |
+| --- | --- | --- |
+| Fee-tier volume credit | **Per subaccount** | `concepts/subaccounts`: "It keeps its own collateral balance, its own rate-limit pools, and its **own volume credit for fee tiering**" |
+| Referral / invite-code volume | **Per wallet (all subaccounts summed)** | `GET /v1/affiliate/info` takes `address` only — there is no `accountIndex` parameter — and returns one `volume30d` |
+
+Practical consequences:
+
+- Splitting trading across subaccounts **delays** fee-tier progression (each index needs
+  its own volume), it does not accelerate it.
+- The same splitting **does** count in full toward the referral/invite-code metric, which
+  is wallet-level.
+
+### 9.17 Affiliate amounts: quote quantums, and camelCase ppm fees
+
+```json
+{"address":"0x…","code":"…","kickbackBps":0,"tier":0,
+ "totalCommission":0,"pendingCommission":0,"volume30d":465834933984061,
+ "totalReferredVolume30d":0,"totalReferredVolumeAllTime":0,"commission30d":0,
+ "traderCount":3,"tradingFeeTier":{"level":0,"makerFeePpm":150,"takerFeePpm":450}}
+```
+
+- Money is integer **quote quantums with 1e9 = $1** (`465834933984061` → $465,834.93).
+  A non-integer amount is rejected rather than rounded.
+- `tradingFeeTier` uses **camelCase `makerFeePpm` / `takerFeePpm`**, unlike
+  `GET /v1/feetiers`, which uses snake_case `maker_fee_ppm`. Both are **ppm**: 150 ppm is
+  **1.5 bps**, not 150 bps. Reading it as bps would overstate cost 100x.
+- Rollup-backed fields are omitted or null when the hourly rollup is unavailable; the
+  endpoint degrades gracefully instead of failing, so `null` is normalised to 0.

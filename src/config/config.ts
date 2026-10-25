@@ -298,6 +298,15 @@ export const configSchema = z
     CANDLE_REFRESH_MS: intFromEnv(10_000, 3_600_000).default(60_000),
     /** How often the daily-report gate is evaluated. */
     REPORT_CHECK_INTERVAL_MS: intFromEnv(10_000, 3_600_000).default(60_000),
+    /** Include the consolidated multi-subaccount balance/ROI block in the report. */
+    REPORT_INCLUDE_ACCOUNT_OVERVIEW: boolFromEnv.default(true),
+    /** Include affiliate/referral standing (referral volume is wallet-level). */
+    REPORT_INCLUDE_AFFILIATE: boolFromEnv.default(true),
+    /**
+     * Highest `accountIndex` scanned for the overview. Arcus allows 0-9; unused
+     * indexes return 404 and are skipped, so scanning the full range is cheap.
+     */
+    ACCOUNT_OVERVIEW_MAX_INDEX: intFromEnv(0, 9).default(9),
     /** Health endpoint stale-loop threshold. 0 = derive from TICK_INTERVAL_MS. */
     HEALTH_STALL_THRESHOLD_MS: intFromEnv(0, 86_400_000).default(0),
 

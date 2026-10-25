@@ -22,7 +22,7 @@
  */
 
 import { z } from 'zod';
-import { Decimal } from '../util/decimal';
+import { Decimal, dec } from '../util/decimal';
 import type { Logger } from '../util/logger';
 import { describeSignature } from '../util/logger';
 import type { ArcusSigner } from './ArcusSigner';
@@ -48,6 +48,7 @@ import type {
   OrderbookSnapshot,
   PlaceOrderRequest,
   Position,
+  AffiliateInfo,
 } from './types';
 
 /* ------------------------------------------------------------------ *
@@ -60,6 +61,52 @@ export class ArcusError extends Error {
     this.name = 'ArcusError';
   }
 }
+
+/** 1e9 quote quantums = $1. */
+const QUOTE_QUANTUMS_PER_USD = '1000000000';
+
+/**
+ * `GET /v1/affiliate/info` response.
+ *
+ * Every rollup-backed field is optional and nullable in practice: the endpoint
+ * "degrades gracefully" and returns 0 when the hourly rollup is unavailable, rather
+ * than failing. Treated as 0 here so a temporarily-missing rollup cannot break the
+ * report.
+ */
+const affiliateInfoSchema = z
+  .object({
+    address: z.string(),
+    code: z.string().optional().nullable(),
+    kickbackBps: z.number().optional().nullable(),
+    tier: z.number().optional().nullable(),
+    totalCommission: z.union([z.number(), z.string()]).optional().nullable(),
+    pendingCommission: z.union([z.number(), z.string()]).optional().nullable(),
+    commission30d: z.union([z.number(), z.string()]).optional().nullable(),
+    volume30d: z.union([z.number(), z.string()]).optional().nullable(),
+    totalReferredVolume30d: z.union([z.number(), z.string()]).optional().nullable(),
+    totalReferredVolumeAllTime: z.union([z.number(), z.string()]).optional().nullable(),
+    traderCount: z.number().optional().nullable(),
+    // Accept both the BPS spelling and the ppm spelling used by GET /v1/feetiers.
+    tradingFeeTier: z
+      .object({
+        level: z.number().optional(),
+        name: z.string().optional(),
+        makerFeeBps: z.union([z.number(), z.string()]).optional().nullable(),
+        takerFeeBps: z.union([z.number(), z.string()]).optional().nullable(),
+        // VERIFIED LIVE: the payload uses camelCase ppm, not the snake_case used by
+        // GET /v1/feetiers, and not bps despite the schema's field name.
+        makerFeePpm: z.union([z.number(), z.string()]).optional().nullable(),
+        takerFeePpm: z.union([z.number(), z.string()]).optional().nullable(),
+        maker_fee_ppm: z.union([z.number(), z.string()]).optional().nullable(),
+        taker_fee_ppm: z.union([z.number(), z.string()]).optional().nullable(),
+      })
+      .passthrough()
+      .optional()
+      .nullable(),
+  })
+  .passthrough();
+
+export interface AffiliateInfoResponse extends AffiliateInfo {}
 
 export class ArcusHttpError extends ArcusError {
   readonly status: number;
@@ -835,6 +882,83 @@ export class ArcusRestClient {
       z.object({ fundingRates: z.array(marketFundingRateSchema) }).passthrough(),
     );
     return res as GetMarketFundingRatesResponse;
+  }
+
+  /**
+   * Affiliate / referral standing for the caller's wallet.
+   *
+   * Requires an Ed25519 signature even though it is a GET: `X-API-Key` alone proves
+   * nothing because API keys are public keys that anyone can list. With no body the
+   * signing message is `timestamp + action`, where the action is the path segment
+   * verbatim (`info`).
+   *
+   * Address-scoped only — no `accountIndex` — so `volume30d` spans every subaccount.
+   */
+  async getAffiliateInfo(address: string): Promise<AffiliateInfoResponse> {
+    const res = await this.request(
+      {
+        method: 'GET',
+        path: '/v1/affiliate/info',
+        endpoint: 'affiliateInfo',
+        query: { address },
+        // Sign when a key is available, but do not require one.
+        //
+        // VERIFIED LIVE 2026-10-25: this endpoint returns 200 with NO auth headers at
+        // all, despite the docs describing it as signed and 403-scoped to the caller.
+        // Requiring a signature would make the readout unavailable for no reason; not
+        // sending one keeps working today and degrades to a 401 — handled by callers —
+        // if the venue starts enforcing the documented behaviour.
+        signed: this.signer !== undefined,
+        action: 'info',
+      },
+      affiliateInfoSchema,
+    );
+
+    // 1e9 quote quantums = $1.
+    const usd = (value: unknown): Decimal => {
+      if (value === null || value === undefined) return dec('0');
+      const raw = typeof value === 'number' ? String(value) : String(value);
+      if (!/^-?[0-9]+$/.test(raw)) {
+        // A float would mean the field is not the documented integer amount; treat it
+        // as unknown rather than silently rounding money.
+        throw new ArcusError(`affiliate amount is not an integer quantum value: ${raw}`);
+      }
+      return dec(raw).div(QUOTE_QUANTUMS_PER_USD);
+    };
+
+    const tier = res.tradingFeeTier;
+    // 1 bp = 100 ppm. The live payload reports ppm, so it must be divided, not copied:
+    // reading 150 ppm as 150 bps would overstate the fee by 100x.
+    const asBps = (bps: unknown, ppm: unknown): Decimal | undefined => {
+      if (bps !== undefined && bps !== null) return dec(String(bps));
+      if (ppm !== undefined && ppm !== null) return dec(String(ppm)).div(100);
+      return undefined;
+    };
+    const maker = asBps(tier?.makerFeeBps, tier?.makerFeePpm ?? tier?.maker_fee_ppm);
+    const taker = asBps(tier?.takerFeeBps, tier?.takerFeePpm ?? tier?.taker_fee_ppm);
+
+    return {
+      address: res.address.toLowerCase(),
+      code: res.code ?? '',
+      kickbackBps: res.kickbackBps ?? 0,
+      tier: res.tier ?? 0,
+      totalCommissionUsd: usd(res.totalCommission),
+      pendingCommissionUsd: usd(res.pendingCommission),
+      commission30dUsd: usd(res.commission30d),
+      volume30dUsd: usd(res.volume30d),
+      referredVolume30dUsd: usd(res.totalReferredVolume30d),
+      referredVolumeAllTimeUsd: usd(res.totalReferredVolumeAllTime),
+      traderCount: res.traderCount ?? 0,
+      ...(tier
+        ? {
+            tradingFeeTier: {
+              level: tier.level ?? 0,
+              ...(maker !== undefined ? { makerFeeBps: maker } : {}),
+              ...(taker !== undefined ? { takerFeeBps: taker } : {}),
+            },
+          }
+        : {}),
+    };
   }
 
   async getFeeTiers(): Promise<FeeTiersResponse> {

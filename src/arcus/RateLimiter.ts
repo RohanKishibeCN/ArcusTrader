@@ -45,6 +45,12 @@ export const REQUEST_WEIGHT = {
   feeTiers: 2,
   leverages: 2,
   accountStats: 2,
+  /**
+   * Affiliate info. The published weight is not listed in the docs this system was
+   * built against, so it is charged at the same rate as the other heavy account reads.
+   * Over-charging only throttles us earlier; under-charging would risk a 429.
+   */
+  affiliateInfo: 20,
   rateLimit: 2,
   prices: 20,
   markets: 20,

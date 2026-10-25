@@ -403,6 +403,59 @@ export async function runPreflight(context: Awaited<ReturnType<typeof bootstrap>
     lines.push(`[warn] fee tiers unavailable: ${describeArcusError(error)}`);
   }
 
+  /* 7b. affiliate / referral standing — SIGNED read
+   *
+   * Read-only, but it needs the Ed25519 key: `X-API-Key` alone proves nothing because
+   * API keys are public keys that anyone can list. Two things this establishes that
+   * nothing else can:
+   *
+   *  - that the configured key can produce a signature the venue accepts (the first
+   *    end-to-end proof of the signing path short of placing an order), and
+   *  - the wallet-level 30-day volume and fee tier, which the account endpoints do not
+   *    expose. `/v1/affiliate/info` takes no accountIndex, so its volume spans every
+   *    subaccount — unlike the fee-tier volume credit, which is per subaccount.
+   */
+  if (!address) {
+    lines.push('[note] GET /v1/affiliate/info skipped: ARCUS_WALLET_ADDRESS is unset');
+  } else {
+    try {
+      const affiliate = await rest.getAffiliateInfo(address);
+      // Deliberately NOT described as proof that signing works: verified live on
+      // 2026-10-25, this endpoint returns 200 with NO auth headers at all (see
+      // docs/API_CONTRACTS.md §9.15). It reports standing; it does not verify the key.
+      lines.push(
+        `[ok]   GET /v1/affiliate/info ok: fee tier level ${affiliate.tradingFeeTier?.level ?? affiliate.tier}` +
+          `${affiliate.tradingFeeTier?.makerFeeBps !== undefined ? `, maker ${affiliate.tradingFeeTier.makerFeeBps.toString()}bps` : ''}` +
+          `${affiliate.tradingFeeTier?.takerFeeBps !== undefined ? `, taker ${affiliate.tradingFeeTier.takerFeeBps.toString()}bps` : ''}`,
+      );
+      lines.push(
+        `[info] 30d own volume (wallet-level, includes every subaccount): $${affiliate.volume30dUsd.toFixed(2)}` +
+          ` | referral code: ${affiliate.code === '' ? 'none' : affiliate.code}` +
+          ` | referees: ${affiliate.traderCount}`,
+      );
+      lines.push(
+        `[info] commission: lifetime $${affiliate.totalCommissionUsd.toFixed(2)}` +
+          ` | pending $${affiliate.pendingCommissionUsd.toFixed(2)}` +
+          ` | 30d $${affiliate.commission30dUsd.toFixed(2)}`,
+      );
+    } catch (error) {
+      // 404 simply means the wallet has no affiliate record yet, which is normal for a
+      // trading-only account and is not a failure.
+      const isNotFound =
+        error instanceof ArcusHttpError ? error.status === 404 : /404/.test(describeArcusError(error));
+      const unauthorised =
+        error instanceof ArcusHttpError ? error.status === 401 : /\b401\b/.test(describeArcusError(error));
+      lines.push(
+        isNotFound
+          ? '[info] GET /v1/affiliate/info returned 404: no affiliate record for this wallet (normal)'
+          : unauthorised
+            ? '[warn] GET /v1/affiliate/info now REQUIRES auth (it did not on 2026-10-25); ' +
+              'set a signing key to keep the referral readout'
+            : `[warn] GET /v1/affiliate/info failed: ${describeArcusError(error)}`,
+      );
+    }
+  }
+
   /* 8. Lark */
   if (config.raw.REPORT_ENABLED) {
     if (!context.larkClient.configured) {
@@ -472,7 +525,10 @@ async function runReport(context: Awaited<ReturnType<typeof bootstrap>>, send: b
     month: '2-digit',
     day: '2-digit',
   }).format(new Date(nowMs));
-  const input = runtime.buildReportInput(reportDate, nowMs);
+  // The CLI path collects the same wallet-wide extras as the scheduled path, so
+  // `report --once` shows exactly what Lark would receive.
+  const extras = await runtime.collectReportExtras(context.config.raw.ARCUS_WALLET_ADDRESS ?? '');
+  const input = runtime.buildReportInput(reportDate, nowMs, extras);
   const text = renderReportText(input);
   process.stdout.write(`${text}\n`);
 

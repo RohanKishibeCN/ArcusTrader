@@ -22,6 +22,19 @@
 
 import { Decimal, dec, toFixedString } from '../util/decimal';
 import { buildMarkdownCard, type LarkCard } from '../notifications/LarkClient';
+import type { AccountOverview } from '../app/AccountOverview';
+import type { AffiliateInfo } from '../arcus/types';
+
+/**
+ * Optional wallet-wide figures collected just before rendering.
+ *
+ * Separated from `DailyReportInput` so the pure renderer stays synchronously testable:
+ * everything here comes from live reads that the runtime performs on the report path.
+ */
+export interface ReportExtras {
+  readonly overview?: AccountOverview;
+  readonly affiliate?: AffiliateInfo;
+}
 
 /** Every input the report renders. Assembled by the runtime. */
 export interface DailyReportInput {
@@ -60,6 +73,15 @@ export interface DailyReportInput {
    * meaningless rather than zero.
    */
   readonly cashFlowAdjustedReturnPct: Decimal | undefined;
+
+  /**
+   * Consolidated balance across every subaccount that has activity. Absent when the
+   * overview could not be read; the report then omits the breakdown rather than
+   * printing a misleading zero.
+   */
+  readonly accountOverview?: AccountOverview;
+  /** Affiliate/referral standing. Referral volume is wallet-level. */
+  readonly affiliate?: AffiliateInfo;
 
   /* Volume / activity */
   readonly fillCount: number;
@@ -166,6 +188,11 @@ function bps(value: Decimal, base: Decimal): string {
   return `${toFixedString(value.div(base).times(10_000))} bps`;
 }
 
+/** Money for the report; two decimals, locale-independent. */
+function usd(value: Decimal): string {
+  return `$${value.toFixed(2)}`;
+}
+
 function duration(ms: number): string {
   if (ms <= 0) return 'n/a';
   const totalMinutes = Math.round(ms / 60_000);
@@ -263,6 +290,57 @@ export function renderReportMarkdown(input: DailyReportInput): string[] {
       );
     }
     sections.push(lines.join('\n'));
+  }
+
+  /* ---- Wallet across subaccounts ---------------------------------- *
+   * Deliberately reported BEFORE the per-account block: equity and return are
+   * consolidated, and printing only the active subaccount would understate the
+   * account the operator actually has. Volume is NOT consolidated here — see the
+   * affiliate block, which is the only wallet-level volume figure the venue exposes.
+   */
+  if (input.accountOverview) {
+    const overview = input.accountOverview;
+    const lines = [
+      '**Wallet across subaccounts**',
+      `- Total equity: ${usd(overview.totalEquity)}  |  free: ${usd(overview.totalFreeCollateral)}`,
+      `- Lifetime net deposits: ${usd(overview.totalNetDeposits)}  |  lifetime ROI: ${
+        overview.totalLifetimeRoiPct !== undefined ? `${overview.totalLifetimeRoiPct.toFixed(2)}%` : 'n/a (no deposits)'
+      }`,
+      `- Subaccounts with activity: ${overview.subaccounts.length} (scanned 0..${overview.scannedMaxIndex})`,
+    ];
+    for (const sub of overview.subaccounts) {
+      lines.push(
+        `  - #${sub.accountIndex}: equity ${usd(sub.equity)} | deposits ${usd(sub.netDeposits)} | ` +
+          `ROI ${sub.lifetimeRoiPct !== undefined ? `${sub.lifetimeRoiPct.toFixed(2)}%` : 'n/a'}` +
+          `${sub.accountIndex === input.accountIndex ? '  ← active' : ''}`,
+      );
+    }
+    if (overview.subaccounts.length === 0) lines.push('- No subaccount reported any activity');
+    sections.push(lines.join('\n'));
+  }
+
+  /* ---- Referral standing ------------------------------------------ *
+   * `affiliate.volume30dUsd` is the ONLY wallet-level volume figure Arcus exposes
+   * (`/v1/affiliate/info` takes no accountIndex). The fee-tier volume credit stays
+   * per-subaccount and is intentionally NOT summed here.
+   */
+  if (input.affiliate) {
+    const a = input.affiliate;
+    const tierLabel = a.tradingFeeTier
+      ? `level ${a.tradingFeeTier.level}` +
+        (a.tradingFeeTier.makerFeeBps !== undefined ? ` | maker ${a.tradingFeeTier.makerFeeBps.toString()} bps` : '') +
+        (a.tradingFeeTier.takerFeeBps !== undefined ? ` | taker ${a.tradingFeeTier.takerFeeBps.toString()} bps` : '')
+      : `level ${a.tier}`;
+    sections.push(
+      [
+        '**Referral & fees**',
+        `- Fee tier: ${tierLabel}`,
+        `- 30d own volume (all subaccounts): ${usd(a.volume30dUsd)}`,
+        `- Referral code: ${a.code === '' ? 'none' : `\`${a.code}\``}  |  kickback: ${a.kickbackBps} bps`,
+        `- Referees: ${a.traderCount}  |  their 30d volume: ${usd(a.referredVolume30dUsd)}`,
+        `- Commission: lifetime ${usd(a.totalCommissionUsd)}  |  pending ${usd(a.pendingCommissionUsd)}  |  30d ${usd(a.commission30dUsd)}`,
+      ].join('\n'),
+    );
   }
 
   /* ---- Strategy and system --------------------------------------- */

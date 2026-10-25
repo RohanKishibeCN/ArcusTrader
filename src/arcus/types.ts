@@ -343,6 +343,37 @@ export interface AccountPosition extends Position {
   readonly [key: string]: unknown;
 }
 
+/**
+ * `GET /v1/affiliate/info` — the caller's referral/affiliate standing.
+ *
+ * SCHEMA NOTE: the endpoint takes `address` only, with NO `accountIndex` parameter.
+ * Its volume figures are therefore WALLET-LEVEL and include every subaccount — unlike
+ * the fee-tier volume credit, which the docs describe as per-subaccount ("its own
+ * volume credit for fee tiering").
+ *
+ * Amounts arrive as integer "quote quantums" with 1e9 = $1.
+ */
+export interface AffiliateInfo {
+  readonly address: string;
+  /** Active referral code, or '' when never created / revoked. */
+  readonly code: string;
+  /** Affiliate's kickback rate, 0-5000 bps. */
+  readonly kickbackBps: number;
+  /** Affiliate tier used to pick the commission rate. */
+  readonly tier: number;
+  readonly totalCommissionUsd: Decimal;
+  readonly pendingCommissionUsd: Decimal;
+  readonly commission30dUsd: Decimal;
+  /** Own notional fill volume, trailing 30 days. Includes all subaccounts. */
+  readonly volume30dUsd: Decimal;
+  readonly referredVolume30dUsd: Decimal;
+  readonly referredVolumeAllTimeUsd: Decimal;
+  readonly traderCount: number;
+  readonly tradingFeeTier?:
+    | { readonly level: number; readonly makerFeeBps?: Decimal; readonly takerFeeBps?: Decimal }
+    | undefined;
+}
+
 export interface Account {
   readonly accountIndex: AccountIndex;
   readonly address: string;

@@ -552,3 +552,86 @@ describe('error handling', () => {
     }
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * GET /v1/affiliate/info
+ *
+ * Captured live on 2026-10-25. Two things about this payload are worth pinning:
+ *
+ *  1. `tradingFeeTier` uses **camelCase ppm** (`makerFeePpm: 150`), unlike
+ *     `GET /v1/feetiers` which uses snake_case. Reading 150 ppm as 150 bps would
+ *     overstate the fee 100x, so the conversion is asserted, not assumed.
+ *  2. Amounts are integer "quote quantums" with 1e9 = $1.
+ * ------------------------------------------------------------------ */
+describe('getAffiliateInfo (live-verified payload)', () => {
+  const livePayload = {
+    address: '0x00000000000000000000000000000000000000aa',
+    code: 'TESTCODE',
+    kickbackBps: 0,
+    tier: 0,
+    totalCommission: 0,
+    pendingCommission: 0,
+    volume30d: 465_834_933_984_061,
+    totalReferredVolume30d: 0,
+    totalReferredVolumeAllTime: 0,
+    commission30d: 0,
+    traderCount: 3,
+    tradingFeeTier: { level: 0, makerFeePpm: 150, takerFeePpm: 450 },
+  };
+
+  it('converts quote quantums to USD at 1e9 per dollar', async () => {
+    const { client } = clientWith([{ status: 200, body: livePayload }]);
+    const info = await client.getAffiliateInfo('0x00000000000000000000000000000000000000aa');
+    expect(info.volume30dUsd.toFixed(2)).toBe('465834.93');
+    expect(info.totalCommissionUsd.toFixed(2)).toBe('0.00');
+  });
+
+  it('converts ppm fees to bps and keeps the tier level', async () => {
+    const { client } = clientWith([{ status: 200, body: livePayload }]);
+    const info = await client.getAffiliateInfo('0x00000000000000000000000000000000000000aa');
+    expect(info.tradingFeeTier?.level).toBe(0);
+    expect(info.tradingFeeTier?.makerFeeBps?.toFixed(2)).toBe('1.50');
+    expect(info.tradingFeeTier?.takerFeeBps?.toFixed(2)).toBe('4.50');
+    // ppm and bps must not be confused: 450 ppm is 4.5 bps, never 450.
+    expect(info.tradingFeeTier?.takerFeeBps?.toFixed(2)).not.toBe('450.00');
+  });
+
+  it('surfaces the referral code and referee count', async () => {
+    const { client } = clientWith([{ status: 200, body: livePayload }]);
+    const info = await client.getAffiliateInfo('0x00000000000000000000000000000000000000aa');
+    expect(info.code).toBe('TESTCODE');
+    expect(info.traderCount).toBe(3);
+  });
+
+  it('treats a missing rollup as 0 rather than failing the read', async () => {
+    // The endpoint "degrades gracefully" and omits/nullifies rollup fields.
+    const { client } = clientWith([
+      {
+        status: 200,
+        body: {
+          address: '0x00000000000000000000000000000000000000aa',
+          code: '',
+          volume30d: null,
+          totalReferredVolume30d: null,
+          totalReferredVolumeAllTime: null,
+        },
+      },
+    ]);
+    const info = await client.getAffiliateInfo('0x00000000000000000000000000000000000000aa');
+    expect(info.volume30dUsd.toFixed(2)).toBe('0.00');
+    expect(info.referredVolumeAllTimeUsd.toFixed(2)).toBe('0.00');
+    expect(info.code).toBe('');
+  });
+
+  it('refuses a non-integer amount instead of silently rounding money', async () => {
+    const { client } = clientWith([
+      {
+        status: 200,
+        body: { address: '0x00000000000000000000000000000000000000aa', volume30d: 12.5 },
+      },
+    ]);
+    await expect(
+      client.getAffiliateInfo('0x00000000000000000000000000000000000000aa'),
+    ).rejects.toThrow(/not an integer quantum/);
+  });
+});
