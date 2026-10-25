@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local secrets — NEVER commit. See .env.example.
+.env
+.env.*
+!.env.example
+
+# Runtime state
+data/
+logs/
+STOP_TRADING
+*.db
+*.db-wal
+*.db-shm
+
+# Tooling caches (see .npmrc — the workspace-local cache exists because ~/.npm is
+# not always writable on a fresh VPS user)
+.npm-cache/
+.pnpm-store/
+
+# Fetched Arcus documentation snapshot (2.6 MB of third-party docs).
+# Regenerate with `pnpm fetch-docs && pnpm merge-openapi`.
+# Excluded because redistributing a verbatim mirror of someone else's docs in a public
+# repository is not ours to do; the extractor tooling and the derived contract audit in
+# docs/API_CONTRACTS.md ARE committed.
+docs/arcus/
+
+# Test / build artefacts
+coverage/
+*.log
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

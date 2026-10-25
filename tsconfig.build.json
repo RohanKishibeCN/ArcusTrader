@@ -1,0 +1,14 @@
+{
+  "//": "Build-only config. The base tsconfig covers src + tests + tools for typechecking, which forces rootDir='.' and would emit dist/src/... and dist/tools/... . Production only needs src, and PM2 expects dist/index.js, so this config narrows the input and sets the root accordingly.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": false,
+    "noEmit": false,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tests", "tools"]
+}
